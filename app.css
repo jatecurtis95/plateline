@@ -351,21 +351,50 @@ body.client{background:var(--ground)}
 .cnow .v{font-family:"Source Serif 4",Georgia,serif;font-size:23px;font-weight:600;
   line-height:1.2;margin-top:3px}
 .cnow .s{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--mute);margin-top:4px}
-.steps{display:flex;list-style:none;margin:18px 0 0;padding:0}
-.step{flex:1;position:relative;padding-top:17px;text-align:center;min-width:0}
-.step::before,.step::after{content:"";position:absolute;top:4px;height:2px;background:var(--hair-2)}
-.step::before{left:0;width:50%} .step::after{right:0;width:50%}
-.step:first-child::before,.step:last-child::after{display:none}
-.step.done::before,.step.done::after,.step.now::before{background:var(--accent)}
-.dot{position:absolute;top:0;left:50%;transform:translateX(-50%);width:10px;height:10px;
-  border-radius:50%;border:2px solid var(--hair-2);background:var(--ground);z-index:1}
-.step.done .dot,.step.now .dot{background:var(--accent);border-color:var(--accent)}
-.step.now .dot{box-shadow:0 0 0 3px var(--accent-tint)}
-.step .t{font-size:10.5px;color:var(--faint);padding:0 2px}
-.step.now .t{color:var(--ink);font-weight:600}
 .cblurb{font-family:"Source Serif 4",Georgia,serif;font-size:15px;line-height:1.6;
   color:var(--ink-2);margin:16px 0 0}
 .cbox{margin-top:12px;font-size:13px;line-height:1.5;border-radius:6px;padding:10px 12px;
   background:var(--surface-2);border:1px solid var(--hair);color:var(--ink-2)}
 .cbox.wait{background:var(--warn-tint);border-color:var(--warn);color:var(--ink)}
 .cbox b{color:var(--ink)}
+
+/* ---- client tracker ---- */
+/* Built to read like a parcel-tracking page: one vertical list, finished
+   steps ticked, the step happening now highlighted. */
+.trk{list-style:none;margin:0;padding:0}
+.tstep{display:flex;gap:12px;position:relative;padding:0 0 4px}
+.tstep::before{content:"";position:absolute;left:8px;top:20px;bottom:-4px;width:2px;
+  background:var(--hair-2)}
+.tstep:last-child::before{display:none}
+.tstep.done::before{background:var(--accent)}
+.tmark{flex:0 0 auto;width:18px;height:18px;border-radius:50%;margin-top:2px;z-index:1;
+  border:2px solid var(--hair-2);background:var(--surface);position:relative}
+.tstep.done .tmark{background:var(--accent);border-color:var(--accent)}
+.tstep.done .tmark::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;
+  border:solid var(--on-accent);border-width:0 2px 2px 0;transform:rotate(42deg)}
+.tstep.now .tmark{background:var(--accent);border-color:var(--accent);
+  box-shadow:0 0 0 4px var(--accent-tint)}
+.tbody{flex:1;min-width:0;padding-bottom:16px}
+.tlab{display:block;font-size:14px;font-weight:600;color:var(--ink-2);line-height:1.35}
+.tstep.todo .tlab{color:var(--faint);font-weight:500}
+.tstep.now .tlab{color:var(--accent);font-size:15.5px;font-weight:700}
+.tsub{display:block;font-size:11.5px;color:var(--faint);margin-top:1px;
+  font-family:"IBM Plex Mono",ui-monospace,monospace}
+.tstep.now .tsub{color:var(--accent)}
+.tnote{display:block;font-family:"Source Serif 4",Georgia,serif;font-size:14.5px;line-height:1.55;
+  color:var(--ink-2);margin-top:8px;background:var(--accent-tint);
+  border-left:3px solid var(--accent);border-radius:0 6px 6px 0;padding:10px 12px}
+
+/* ---- step photos ---- */
+.tshots{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.shot{position:relative;width:92px;height:92px;padding:0;cursor:pointer;overflow:hidden;
+  border:1px solid var(--hair);border-radius:8px;background:var(--surface-2);
+  display:flex;align-items:center;justify-content:center}
+.shot:hover{border-color:var(--accent)}
+.shot:focus-visible{outline:2px solid var(--accent-hot);outline-offset:2px}
+.shot img{width:100%;height:100%;object-fit:cover;display:block}
+.shot-fall{display:none;font-size:10px;color:var(--mute);padding:6px;text-align:center;
+  word-break:break-word;line-height:1.3}
+.shot.failed img{display:none}
+.shot.failed .shot-fall{display:block}
+@media(max-width:420px){.shot{width:78px;height:78px}}
