@@ -2,12 +2,16 @@
 
    One person can have more than one car being complied, so this is a list
    with a picker, not a single record. Everything here is theirs: no office
-   note, no workshop name, no job number - the API does not send them. */
+   note, no workshop name, no job number - the API does not send them.
+
+   The tracker is deliberately built like a parcel-tracking page: every step
+   of the job in one vertical list, the finished ones ticked, the one that is
+   happening now highlighted. A customer should be able to read it without
+   asking us anything. */
 
 var API = window.PLATELINE_API || "https://eivyrjzdxtoaqpkwuhta.supabase.co/functions/v1/plateline";
 var KEY = "plateline_client_token";
 var S = null, sel = 0, tab = "car", toastTimer = null;
-var PHASES = ["Paperwork", "Workshop", "Inspection", "Ready"];
 
 function $(i) { return document.getElementById(i); }
 function esc(s) {
@@ -70,10 +74,87 @@ async function load(force) {
   draw();
 }
 
+/* ---------------------------------------------------------------- photos */
+
+/* Signed URLs are fetched once per document and kept for the life of the
+   page, so the 45-second refresh does not re-sign every photo. */
+var shotUrl = {};
+
+function isPhoto(d) {
+  if (d && d.content_type) return /^image\//i.test(d.content_type);
+  return /\.(jpe?g|png|webp|gif|heic|heif|avif|bmp)$/i.test(String((d && d.name) || ""));
+}
+
+/* A document is only pinned to a step if the API says so. It does not yet,
+   so everything lands in the unplaced bucket and is shown in one strip. The
+   moment documents carry a stage this groups itself. */
+function docStage(d) { return (d && (d.stage_id || d.stage)) || ""; }
+
+function shotStrip(list) {
+  if (!list.length) return "";
+  return '<div class="tshots">' + list.map(function (d) {
+    return '<button class="shot" data-shot="' + esc(d.id) + '" title="' + esc(d.name) + '">' +
+      '<img alt="' + esc(d.name) + '" data-img="' + esc(d.id) + '">' +
+      '<span class="shot-fall">' + esc(d.name) + "</span></button>";
+  }).join("") + "</div>";
+}
+
+/* Fills in the thumbnails after the page is drawn. */
+function fillShots() {
+  document.querySelectorAll("[data-img]").forEach(async function (img) {
+    var id = img.getAttribute("data-img");
+    if (!shotUrl[id]) {
+      var r = await api("/api/client/doc", { id: id });
+      if (!r || !r.url) { img.closest(".shot").classList.add("failed"); return; }
+      shotUrl[id] = r.url;
+    }
+    img.addEventListener("error", function () { img.closest(".shot").classList.add("failed"); });
+    img.src = shotUrl[id];
+  });
+}
+
+/* ------------------------------------------------------------- the steps */
+
+/* Best effort only: if a history line names this step, show when it
+   happened. No match, no date - never a guessed one. */
+function stepDate(v, st) {
+  var lab = String(st.client_label || "").toLowerCase();
+  if (!lab) return "";
+  var hit = null;
+  (v.history || []).forEach(function (e) {
+    if (String(e.what || "").toLowerCase().indexOf(lab) > -1) hit = e;
+  });
+  return hit ? hit.when : "";
+}
+
+function tracker(v, here, done, byStage, loose) {
+  return '<ol class="trk">' + S.stages.map(function (st, i) {
+    var cls = i < here ? "done" : i === here ? (done ? "done" : "now") : "todo";
+    var when = cls === "done" ? stepDate(v, st) : "";
+    var mine = byStage[st.id] || [];
+    // With nothing pinned to a step, the photos sit under whatever is
+    // happening now, which is what a customer is looking for anyway.
+    if (!mine.length && i === here) mine = loose;
+
+    return '<li class="tstep ' + cls + '">' +
+      '<span class="tmark"></span>' +
+      '<span class="tbody">' +
+      '<span class="tlab">' + esc(st.client_label) + "</span>" +
+      (when ? '<span class="tsub">' + esc(when) + "</span>"
+            : cls === "now" ? '<span class="tsub">Happening now</span>' : "") +
+      (cls === "now" && st.blurb ? '<span class="tnote">' + esc(st.blurb) + "</span>" : "") +
+      shotStrip(mine) +
+      "</span></li>";
+  }).join("") + "</ol>";
+}
+
+/* ------------------------------------------------------------------ draw */
+
 function draw() {
   if (!S) return;
   var v = S.vehicles[sel];
   var st = v ? S.stages.filter(function (s) { return s.id === v.stage; })[0] : null;
+  var here = v ? S.stages.map(function (s) { return s.id; }).indexOf(v.stage) : -1;
   var done = v ? S.stages[S.stages.length - 1].id === v.stage : false;
 
   var picker = S.vehicles.length > 1
@@ -99,6 +180,14 @@ function draw() {
     return;
   }
 
+  var docs = v.docs || [];
+  var photos = docs.filter(isPhoto), papers = docs.filter(function (d) { return !isPhoto(d); });
+  var byStage = {}, loose = [];
+  photos.forEach(function (d) {
+    var sid = docStage(d);
+    if (sid) { (byStage[sid] = byStage[sid] || []).push(d); } else { loose.push(d); }
+  });
+
   var body;
   if (tab === "msg") {
     body = '<div class="ccard" style="padding:0">' +
@@ -106,10 +195,6 @@ function draw() {
       '<div class="composer"><textarea id="c-msg" rows="1" placeholder="Ask about your car"></textarea>' +
       '<button class="btn" id="c-send">Send</button></div></div>';
   } else {
-    var steps = PHASES.map(function (t, i) {
-      var cls = i < st.phase ? "done" : i === st.phase ? (done ? "done" : "now") : "";
-      return '<li class="step ' + cls + '"><span class="dot"></span><span class="t">' + esc(t) + "</span></li>";
-    }).join("");
     var since = v.days === 0 ? "Updated today" : v.days === 1 ? "Since yesterday" : "Since " + v.days + " days ago";
 
     body = '<div class="ccard">' +
@@ -118,23 +203,20 @@ function draw() {
       (v.plate_no ? " &middot; plate " + esc(v.plate_no) : "") + "</div>" +
       '<div class="cnow"><div class="k">' + (done ? "Complete" : "Right now") + "</div>" +
       '<div class="v">' + esc(st.client_label) + '</div><div class="s">' + esc(since) + "</div></div>" +
-      '<ol class="steps">' + steps + "</ol>" +
-      '<p class="cblurb">' + esc(st.blurb) + "</p>" +
-      (v.hold ? '<div class="cbox wait"><b>Waiting on:</b> ' + esc(v.hold) + "</div>" : "") +
-      '<div class="cbox"><b>Next:</b> ' + esc(st.you_note) + "</div>" +
+      (v.hold ? '<div class="cbox wait"><b>We are waiting on:</b> ' + esc(v.hold) + "</div>" : "") +
+      (done ? "" : '<div class="cbox"><b>What happens next:</b> ' + esc(st.you_note) + "</div>") +
       (v.eta_ready ? '<div class="cbox"><b>Expected ready:</b> ' + esc(fmtDate(v.eta_ready)) + "</div>" : "") +
-      (v.docs.length ? '<div style="margin-top:16px"><div class="lbl">Your documents</div>' +
-        v.docs.map(function (d) {
-          return '<div class="doc" style="padding:8px 0"><span class="nm">' + esc(d.name) + "</span>" +
-            '<button class="btn quiet sm" data-doc="' + d.id + '">Open</button></div>';
-        }).join("") + "</div>" : "") +
-      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--hair)">' +
-      '<div class="lbl">History</div>' +
-      v.history.slice().reverse().map(function (e) {
-        return '<div class="ev" style="padding:5px 0;border:0"><span class="d">' + esc(e.when) +
-          '</span><span class="w">' + esc(e.what) + "</span></div>";
-      }).join("") + "</div>" +
       "</div>" +
+
+      '<div class="ccard"><div class="lbl" style="margin-bottom:12px">Every step</div>' +
+      tracker(v, here, done, byStage, loose) + "</div>" +
+
+      (papers.length ? '<div class="ccard"><div class="lbl" style="margin-bottom:8px">Your documents</div>' +
+        papers.map(function (d) {
+          return '<div class="doc" style="padding:8px 0"><span class="nm">' + esc(d.name) + "</span>" +
+            '<button class="btn quiet sm" data-doc="' + esc(d.id) + '">Open</button></div>';
+        }).join("") + "</div>" : "") +
+
       '<div class="ccard"><div class="lbl" style="margin-bottom:8px">How we reach you</div>' +
       '<label class="toggle" style="display:flex;margin-bottom:8px"><input type="checkbox" id="p-sms"' +
       (S.client.notify_sms ? " checked" : "") + '><span class="track"></span><span>Text message</span></label>' +
@@ -160,6 +242,12 @@ function draw() {
       if (r && r.url) window.open(r.url, "_blank"); else toast("That file is not available.");
     });
   });
+  document.querySelectorAll("[data-shot]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var u = shotUrl[b.getAttribute("data-shot")];
+      if (u) window.open(u, "_blank"); else toast("That photo is not available.");
+    });
+  });
 
   if (tab === "msg") {
     var el = $("c-thread");
@@ -181,6 +269,7 @@ function draw() {
       if (ev.key === "Enter" && !ev.shiftKey) { ev.preventDefault(); $("c-send").click(); }
     });
   } else {
+    fillShots();
     ["p-sms", "p-email"].forEach(function (id) {
       $(id).addEventListener("change", async function () {
         await api("/api/client/prefs", { notify_sms: $("p-sms").checked, notify_email: $("p-email").checked });
