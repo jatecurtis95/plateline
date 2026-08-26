@@ -590,19 +590,70 @@ function viewJob(m, id) {
   });
 }
 
+/* A photo off a phone arrives around 4032px and 3MB. Kept at that size, twenty
+   photos a car at twenty-five cars a month is about 18GB in the first year,
+   against a free tier of 1GB. On the long edge 1600px is still more than a
+   client needs to see their car, and is roughly six times smaller.
+
+   The original is uploaded untouched whenever the resize is not clearly a win:
+   anything that is not an image, anything already small enough, anything the
+   browser cannot decode - HEIC outside Safari, most obviously - and any resize
+   that failed to save space. A photo is never worth losing to this. */
+var PHOTO_MAX_EDGE = 1600;
+var PHOTO_QUALITY = 0.85;
+
+function loadBitmap(file) {
+  if (window.createImageBitmap) return createImageBitmap(file, { imageOrientation: "from-image" });
+  // Older browsers: an <img> applies EXIF rotation on its own before drawing.
+  return new Promise(function (res, rej) {
+    var url = URL.createObjectURL(file), img = new Image();
+    img.onload = function () { URL.revokeObjectURL(url); res(img); };
+    img.onerror = function () { URL.revokeObjectURL(url); rej(new Error("decode")); };
+    img.src = url;
+  });
+}
+
+/* A smaller JPEG of the same picture, or null to mean "upload the original". */
+async function downscale(file) {
+  if (!/^image\//i.test(file.type || "")) return null;
+  var bmp;
+  try { bmp = await loadBitmap(file); } catch (e) { return null; }
+  var w = bmp.width, h = bmp.height, edge = Math.max(w, h);
+  if (!edge || edge <= PHOTO_MAX_EDGE) return null;
+
+  var k = PHOTO_MAX_EDGE / edge;
+  var cv = document.createElement("canvas");
+  cv.width = Math.round(w * k);
+  cv.height = Math.round(h * k);
+  cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+  if (bmp.close) bmp.close();
+
+  var small = await new Promise(function (res) { cv.toBlob(res, "image/jpeg", PHOTO_QUALITY); });
+  return small && small.size < file.size ? small : null;
+}
+
 async function uploadDoc(vid, file) {
   if (!file) return;
   if (file.size > 25 * 1024 * 1024) return toast("That file is over 25MB.");
   toast("Uploading");
-  var s = await api("/api/op/doc/sign", { vehicle_id: vid, name: file.name });
+
+  var body = file, name = file.name, type = file.type || "";
+  var small = await downscale(file);
+  if (small) {
+    body = small;
+    type = "image/jpeg";
+    name = name.replace(/\.[^.]+$/, "") + ".jpg";
+  }
+
+  var s = await api("/api/op/doc/sign", { vehicle_id: vid, name: name });
   if (!s || !s.url) return toast((s && s.error) || "Could not start the upload.");
   try {
-    var put = await fetch(s.url, { method: "PUT", headers: { "content-type": file.type || "application/octet-stream" }, body: file });
+    var put = await fetch(s.url, { method: "PUT", headers: { "content-type": type || "application/octet-stream" }, body: body });
     if (!put.ok) throw new Error("upload");
   } catch (e) { return toast("The upload did not finish."); }
   await api("/api/op/doc/save", {
-    vehicle_id: vid, name: file.name, path: s.path,
-    content_type: file.type || "", size: file.size, client_visible: false
+    vehicle_id: vid, name: name, path: s.path,
+    content_type: type, size: body.size, client_visible: false
   });
   toast("Uploaded"); load(true);
 }
