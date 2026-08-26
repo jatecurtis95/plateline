@@ -42,26 +42,57 @@ function fmtDate(d) {
   return isNaN(x) ? d : x.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-/* Stages carry a `phase`. Ten narrow columns holding five cars is eight
-   columns reading "0"; four phase columns fill the width instead. If the
-   API ever stops sending `phase`, fall back to slicing the stage list into
-   four even groups so the board still draws. */
-var PHASE_FALLBACK = ["Approval", "Workshop", "Inspection", "Registration"];
+/* The API sends `phase` as a NUMBER, 0-3, indexing PHASE_NAMES. It has also
+   been seen absent, so a stage with no phase at all is placed by position.
+
+   Nothing here may treat phase 0 as missing. That was the bug that split the
+   first phase across two columns and put "1", "2" and "3" at the top of the
+   other three: `if (st.phase)` is false for 0. */
+var PHASE_NAMES = ["Approval", "Workshop", "Inspection", "Registration"];
+var PHASE_ICONS = ["\uD83D\uDCC4", "\uD83D\uDD27", "\uD83D\uDD0D", "\u2705"];
+
 function titleish(s) {
   return String(s || "").replace(/[_-]+/g, " ")
     .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
 }
-function phaseKey(st, i, n) {
-  if (st && st.phase) return String(st.phase);
-  var per = Math.ceil((n || 1) / PHASE_FALLBACK.length) || 1;
-  return PHASE_FALLBACK[Math.min(PHASE_FALLBACK.length - 1, Math.floor(i / per))];
+
+function isNum(p) {
+  if (typeof p === "number") return isFinite(p);
+  return typeof p === "string" && p.trim() !== "" && isFinite(p);
 }
+
+function phaseOf(st, i, n) {
+  var p = st ? st.phase : null;
+  if (isNum(p)) {
+    var k = Math.floor(Number(p));
+    return { key: "p" + k, label: PHASE_NAMES[k] || "Phase " + (k + 1), idx: k };
+  }
+  if (p) return { key: "s" + p, label: titleish(p), idx: null };
+  var per = Math.ceil((n || 1) / PHASE_NAMES.length) || 1;
+  var f = Math.min(PHASE_NAMES.length - 1, Math.floor(i / per));
+  return { key: "p" + f, label: PHASE_NAMES[f], idx: f };
+}
+
+/* Named phases from an older API still get the right icon. */
+function phaseIcon(label, idx) {
+  if (idx != null && PHASE_ICONS[idx]) return PHASE_ICONS[idx];
+  var l = String(label || "").toLowerCase();
+  if (/approv|paper|document|submit|ship/.test(l)) return PHASE_ICONS[0];
+  if (/workshop|repair|modif|fit/.test(l)) return PHASE_ICONS[1];
+  if (/inspect|check|test/.test(l)) return PHASE_ICONS[2];
+  if (/regist|plate|ready|road|complete|done/.test(l)) return PHASE_ICONS[3];
+  return "\u2022";
+}
+
 function phases() {
   var out = [], seen = {};
   S.stages.forEach(function (st, i) {
-    var k = phaseKey(st, i, S.stages.length);
-    if (!seen[k]) { seen[k] = { key: k, label: titleish(k), stages: [] }; out.push(seen[k]); }
-    seen[k].stages.push(st);
+    var p = phaseOf(st, i, S.stages.length);
+    if (!seen[p.key]) {
+      seen[p.key] = { key: p.key, label: p.label, icon: phaseIcon(p.label, p.idx), stages: [] };
+      out.push(seen[p.key]);
+    }
+    seen[p.key].stages.push(st);
   });
   return out;
 }
@@ -326,7 +357,8 @@ function viewBoard(m, focus) {
 
     var isEnd = p.stages.some(function (s) { return isLast(s.id); });
     return '<section class="col' + (isEnd ? " last" : "") + '">' +
-      '<div class="col-h"><span class="lbl">' + esc(p.label) + "</span>" +
+      '<div class="col-h"><span class="lbl">' +
+      '<span class="ico" aria-hidden="true">' + p.icon + "</span>" + esc(p.label) + "</span>" +
       '<span class="n mono">' + rows.length + "</span></div>" +
       '<div class="col-sub">' + p.stages.map(function (s) {
         return esc(s.op_label) + " " + countAt(s.id);

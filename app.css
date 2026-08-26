@@ -428,3 +428,12 @@ body.client{background:var(--ground)}
 
 /* clients: photo on each car row */
 .crow .thumb{margin-top:1px}
+
+/* ---- icons ---- */
+/* Emoji sit on their own baseline; this keeps them from nudging the text. */
+.ico{display:inline-block;font-size:13px;line-height:1;width:1.15em;margin-right:7px;
+  text-align:center;font-family:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
+  font-style:normal;flex:0 0 auto}
+.nav a .ico{font-size:14px;margin-right:9px}
+.col-h .lbl{display:flex;align-items:center;min-width:0}
+.col-h .ico{font-size:12px;margin-right:6px}
