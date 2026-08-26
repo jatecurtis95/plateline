@@ -398,3 +398,33 @@ body.client{background:var(--ground)}
 .shot.failed img{display:none}
 .shot.failed .shot-fall{display:block}
 @media(max-width:420px){.shot{width:78px;height:78px}}
+
+/* ---- car thumbnails ---- */
+/* A photo of the car next to it wherever it is listed. Falls back to a
+   tinted box, or to whatever the caller passes, when there is no photo. */
+.thumb{position:relative;flex:0 0 auto;overflow:hidden;border-radius:5px;
+  background:var(--surface-2) center/20px no-repeat
+  url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238A9391' stroke-width='1.5'%3E%3Crect x='3' y='5' width='18' height='14' rx='2'/%3E%3Ccircle cx='8.5' cy='10' r='1.4'/%3E%3Cpath d='M21 16l-5-5-6 6-2-2-5 5'/%3E%3C/svg%3E");
+  border:1px solid var(--hair);display:inline-flex;align-items:center;justify-content:center}
+.thumb img{width:100%;height:100%;object-fit:cover;display:none}
+.thumb.on img{display:block}
+.thumb .fb{font-style:normal;font-size:11px;font-weight:700;color:var(--accent)}
+.thumb.on .fb{display:none}
+/* When a caller supplies its own fallback, drop the photo glyph. */
+.thumb.fbk{background-image:none}
+.thumb.on{background-image:none}
+.thumb.sm{width:34px;height:34px}
+.thumb.md{width:46px;height:46px}
+.thumb.round,.thumb.round img{border-radius:50%}
+.thumb.round{background-color:var(--accent-tint);border-color:transparent}
+
+/* board card: photo beside the text */
+.card a.open{display:flex;gap:9px;align-items:flex-start}
+.card a.open .tx{flex:1;min-width:0}
+
+/* cars table: photo beside the car name */
+.cellrow{display:flex;gap:9px;align-items:center}
+.cellrow .tx{min-width:0}
+
+/* clients: photo on each car row */
+.crow .thumb{margin-top:1px}
