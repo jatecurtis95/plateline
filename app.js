@@ -69,6 +69,43 @@ function countAt(stageId) {
   return S.cars.filter(function (c) { return c.stage === stageId; }).length;
 }
 function docCount(c) { return (c.docs || []).length; }
+
+/* A photo of the car, shown next to it wherever it is listed. The first
+   image on the car is the one used. Signed URLs are cached for ten minutes
+   so the thirty-second poll does not re-sign every thumbnail. */
+var opShot = {};
+var SHOT_TTL = 10 * 60 * 1000;
+
+function isPhotoDoc(d) {
+  if (d && d.content_type) return /^image\//i.test(d.content_type);
+  return /\.(jpe?g|png|webp|gif|heic|heif|avif|bmp)$/i.test(String((d && d.name) || ""));
+}
+function carShot(c) {
+  var ds = (c.docs || []).filter(isPhotoDoc);
+  return ds.length ? ds[0] : null;
+}
+/* cls sizes it; fallback is what shows when the car has no photo yet. */
+function thumb(c, cls, fallback) {
+  var d = carShot(c);
+  var k = "thumb" + (cls ? " " + cls : "") + (fallback ? " fbk" : "");
+  if (!d) return '<span class="' + k + '">' + (fallback || "") + "</span>";
+  return '<span class="' + k + '"><img data-thumb="' + esc(d.id) + '" alt="">' +
+    (fallback ? '<i class="fb">' + fallback + "</i>" : "") + "</span>";
+}
+function fillThumbs() {
+  document.querySelectorAll("img[data-thumb]").forEach(async function (img) {
+    var id = img.getAttribute("data-thumb"), now = Date.now();
+    var hit = opShot[id];
+    if (!hit || now - hit.at > SHOT_TTL) {
+      var r = await api("/api/op/doc/url", { id: id });
+      if (!r || !r.url) return;
+      opShot[id] = hit = { url: r.url, at: now };
+    }
+    img.addEventListener("load", function () { img.parentNode.classList.add("on"); });
+    img.addEventListener("error", function () { img.parentNode.classList.remove("on"); });
+    img.src = hit.url;
+  });
+}
 function stageStep(id) { var i = stageIdx(id); return i > -1 ? i + 1 : 0; }
 
 /* The bar under a stage name: "3 of 10", drawn. */
@@ -205,7 +242,7 @@ function viewToday(m) {
     if (c.plate_no) tail.push(esc(c.plate_no));
     if (c.workshop) tail.push(esc(c.workshop));
     return '<a class="rw" href="#/job/' + c.id + '">' +
-      '<span class="ava">' + esc(initials(cl.name)) + "</span>" +
+      thumb(c, "sm round", esc(initials(cl.name))) +
       '<span class="mid"><span class="nm">' + esc(c.description) + "</span>" +
       '<span class="sub">' + esc(cl.name || "") +
       " &middot; " + esc(st.op_label || "") +
@@ -243,6 +280,7 @@ function viewToday(m) {
   m.querySelectorAll("[data-go]").forEach(function (b) {
     b.addEventListener("click", function () { go(b.getAttribute("data-go")); });
   });
+  fillThumbs();
 }
 
 /* ----------------------------------------------------------------- board */
@@ -269,6 +307,8 @@ function viewBoard(m, focus) {
       return '<div class="card' + (focus && c.stage === focus ? " hit" : "") + '"' +
         (focus && c.stage === focus ? ' data-focus="1"' : "") + ">" +
         '<a class="open" href="#/job/' + c.id + '">' +
+        thumb(c, "md") +
+        '<span class="tx">' +
         '<span class="stg">' + esc(cst.op_label || "") + "</span>" +
         '<span class="car">' + esc(c.description) + "</span>" +
         '<span class="who">' + esc(cl.name || "") + "</span>" +
@@ -278,7 +318,7 @@ function viewBoard(m, focus) {
         (c.unread ? '<span class="chip bad">' + c.unread + " new</span>" : "") +
         "</span>" +
         (facts.length ? '<span class="chips facts">' + facts.join("") + "</span>" : "") +
-        "</a>" +
+        "</span></a>" +
         (next ? '<button class="adv" data-next="' + c.id + '" data-to="' + next.id +
           '">Move to ' + esc(next.op_label) + "</button>" : "") +
         "</div>";
@@ -308,6 +348,7 @@ function viewBoard(m, focus) {
   });
   var first = m.querySelector("[data-focus]");
   if (first && first.scrollIntoView) first.scrollIntoView({ block: "nearest" });
+  fillThumbs();
 }
 
 /* ------------------------------------------------------------------ cars */
@@ -329,8 +370,9 @@ function fillJobRows(m) {
     var cl = clientById(c.client_id) || {};
     var st = stageOf(c.stage) || {};
     return '<tr data-open="' + c.id + '">' +
-      "<td><b>" + esc(c.description) + "</b><br>" +
-      '<span class="mono sub-xs">' + esc(c.chassis) + "</span></td>" +
+      '<td><span class="cellrow">' + thumb(c, "sm") +
+      '<span class="tx"><b>' + esc(c.description) + "</b><br>" +
+      '<span class="mono sub-xs">' + esc(c.chassis) + "</span></span></span></td>" +
       "<td>" + esc(cl.name || "") +
       (cl.company ? '<br><span class="sub-xs">' + esc(cl.company) + "</span>" : "") + "</td>" +
       '<td><span class="chip ' + (isLast(c.stage) ? "done" : "stage") + '">' + esc(st.op_label || "") + "</span>" +
@@ -348,6 +390,7 @@ function fillJobRows(m) {
   tb.querySelectorAll("[data-open]").forEach(function (tr) {
     tr.addEventListener("click", function () { go("#/job/" + tr.getAttribute("data-open")); });
   });
+  fillThumbs();
   var cnt = $("jcount");
   if (cnt) cnt.textContent = list.length === S.cars.length
     ? S.cars.length + (S.cars.length === 1 ? " car" : " cars")
@@ -639,7 +682,7 @@ function clientCard(c) {
     if (v.plate_no) sub.push(esc(v.plate_no));
     else if (v.chassis) sub.push('<span class="mono">' + esc(v.chassis) + "</span>");
     if (v.workshop) sub.push(esc(v.workshop));
-    return '<a class="crow" href="#/job/' + v.id + '">' +
+    return '<a class="crow" href="#/job/' + v.id + '">' + thumb(v, "sm") +
       '<span class="mid"><span class="nm">' + esc(v.description) + "</span>" +
       '<span class="sub">' + sub.join(" &middot; ") + "</span></span>" +
       '<span class="rt">' +
@@ -676,6 +719,7 @@ function fillClients(m) {
     ? '<div class="clients">' + list.map(clientCard).join("") + "</div>"
     : '<div class="panel"><div class="empty">' +
       (S.clients.length ? "No clients match." : "No clients yet.") + "</div></div>";
+  fillThumbs();
   var cnt = $("ccount");
   if (cnt) cnt.textContent = list.length === S.clients.length
     ? S.clients.length + (S.clients.length === 1 ? " client" : " clients")
