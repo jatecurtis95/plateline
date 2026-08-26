@@ -6,154 +6,21 @@
 <meta name="robots" content="noindex,nofollow">
 <meta name="color-scheme" content="light dark">
 <title>Your import &middot; Plateline</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%AA%AA%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
-
+<body class="client">
 <div class="signin" id="gate" hidden>
   <div class="box">
     <h1>You need your link</h1>
     <p id="gate-msg">Open the link we sent you and you will be signed straight in.</p>
   </div>
 </div>
-
-<div class="wrap" id="app" style="max-width:680px" hidden>
-  <div class="topbar">
-    <div>
-      <span class="lbl">Your import</span>
-      <div style="font-size:20px;font-weight:700;letter-spacing:-.02em">Plateline</div>
-    </div>
-    <span class="who" id="c-who">&mdash;</span>
-  </div>
-  <div class="appnav" role="tablist" aria-label="Sections" style="background:none;padding-left:0">
-    <button type="button" role="tab" id="ct-car" aria-selected="true">My car</button>
-    <button type="button" role="tab" id="ct-msg" aria-selected="false">Messages</button>
-  </div>
-  <div id="c-body"><div class="loading">Loading&hellip;</div></div>
-  <div style="height:50px"></div>
-</div>
-
+<div id="app" hidden></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-
-<script>
-var API = window.PLATELINE_API || "https://eivyrjzdxtoaqpkwuhta.supabase.co/functions/v1/plateline";
-var KEY = "plateline_client_token";
-var S = null, tab = "car", toastTimer = null;
-var PHASES = ["Paperwork","Workshop","Inspection","Ready"];
-
-function $(i){return document.getElementById(i);}
-function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){
-  return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
-function toast(m){var t=$("toast");t.textContent=m;t.classList.add("on");
-  if(toastTimer)clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.classList.remove("on");},3600);}
-function tok(){ try{ return localStorage.getItem(KEY); }catch(e){ return window.__t||null; } }
-function setTok(v){ try{ v?localStorage.setItem(KEY,v):localStorage.removeItem(KEY); }catch(e){ window.__t=v; } }
-
-// A link like my.html?t=xxxx signs them in, then the address is tidied
-// so the token is not left sitting in the address bar or in history.
-(function(){
-  var u = new URL(location.href);
-  var t = u.searchParams.get("t");
-  if(t){ setTok(t); u.searchParams.delete("t");
-    history.replaceState({}, "", u.pathname + (u.search||"") + u.hash); }
-})();
-
-async function api(path, body){
-  var o={method:body?"POST":"GET",headers:{"content-type":"application/json"}};
-  var t=tok(); if(t) o.headers.authorization="Bearer "+t;
-  if(body) o.body=JSON.stringify(body);
-  var r;
-  try { r = await fetch(API+path,o); } catch(e){ return {error:"unreachable"}; }
-  if(r.status===401){ return {error:"expired"}; }
-  return await r.json().catch(function(){return {};});
-}
-
-function gate(msg){ $("app").hidden=true; $("gate").hidden=false; if(msg) $("gate-msg").textContent=msg; }
-
-async function load(){
-  if(!tok()){ gate(); return; }
-  var d = await api("/api/client/state");
-  if(!d || d.error){
-    gate(d && d.error==="unreachable"
-      ? "Cannot reach the server just now. Try again in a moment."
-      : "That link has expired. Ask us to send you a fresh one.");
-    return;
-  }
-  S=d; $("gate").hidden=true; $("app").hidden=false; draw();
-}
-
-function draw(){
-  if(!S) return;
-  $("c-who").textContent = S.client ? S.client.name : "";
-  $("ct-car").setAttribute("aria-selected", String(tab==="car"));
-  $("ct-msg").setAttribute("aria-selected", String(tab==="msg"));
-  var body=$("c-body"); body.textContent="";
-  var v=S.vehicle;
-  if(!v){ body.innerHTML='<div class="loading">No car on your account yet.</div>'; return; }
-  var st=null; S.stages.forEach(function(s){ if(s.id===v.stage) st=s; });
-  if(!st) return;
-  var done = v.stage==="passed";
-
-  if(tab==="msg"){
-    var thr=document.createElement("div"); thr.className="thread";
-    thr.style.maxHeight="340px"; thr.style.padding="14px 0";
-    body.appendChild(thr);
-    if(!v.messages.length){ var e=document.createElement("div"); e.className="msg sys";
-      e.textContent="No messages yet. Ask us anything about your car, we usually reply the same day."; thr.appendChild(e); }
-    v.messages.forEach(function(m){
-      var d=document.createElement("div");
-      if(m.from==="system"){ d.className="msg sys"; d.textContent="— "+m.body+" —"; }
-      else { d.className="msg "+(m.from==="client"?"us":"them");
-        d.innerHTML=esc(m.body)+'<span class="meta">'+
-          esc(m.from==="office"?"Compliance team":"You")+' · '+esc(m.at)+'</span>'; }
-      thr.appendChild(d);
-    });
-    thr.scrollTop=thr.scrollHeight;
-    var comp=document.createElement("div"); comp.className="composer";
-    comp.style.background="transparent"; comp.style.padding="12px 0 0";
-    comp.innerHTML='<textarea id="c-msg" rows="1" placeholder="Ask about your car&hellip;" aria-label="Your message"></textarea>'+
-      '<button class="btn" type="button" id="c-send">Send</button>';
-    body.appendChild(comp);
-    $("c-send").addEventListener("click", async function(){
-      var box=$("c-msg"); var t=(box.value||"").trim();
-      if(!t){ box.focus(); return; }
-      await api("/api/client/message",{body:t});
-      box.value=""; await load(); tab="msg"; draw(); toast("Sent. It is with the compliance team now.");
-    });
-    return;
-  }
-
-  var steps=PHASES.map(function(t,i){
-    var cls = i<st.phase ? "done" : i===st.phase ? (done?"done":"now") : "";
-    return '<li class="step '+cls+'"><span class="dot"></span><span class="t">'+esc(t)+'</span></li>';
-  }).join("");
-  var since = v.days===0 ? "Updated today" : v.days===1 ? "Since yesterday" : ("Since "+v.days+" days ago");
-  var hist = v.history.slice().reverse().map(function(e){
-    return '<div class="ev"><span class="d">'+esc(e.when)+'</span><span class="w">'+esc(e.what)+'</span></div>';
-  }).join("");
-
-  body.innerHTML=
-    '<h2 class="c-car">'+esc(v.description)+'</h2>'+
-    '<div class="c-vin">'+esc(v.chassis)+'</div>'+
-    '<div class="c-now"><div class="k">'+(done?"Complete":"Right now")+'</div>'+
-    '<div class="v">'+esc(st.client_label)+'</div><div class="s">'+esc(since)+'</div></div>'+
-    '<ol class="steps">'+steps+'</ol>'+
-    '<p class="c-blurb">'+esc(st.blurb)+'</p>'+
-    (v.hold?'<div class="c-box wait"><b>Currently waiting on:</b> '+esc(v.hold)+'</div>':'')+
-    '<div class="c-box next"><b>What happens next:</b> '+esc(st.you_note)+'</div>'+
-    '<div class="c-hist"><span class="lbl">History</span>'+hist+'</div>'+
-    '<p class="c-foot">You will get a message every time this changes, so there is nothing to keep checking. '+
-    'Questions go straight to the compliance team under Messages.</p>';
-}
-
-$("ct-car").addEventListener("click", function(){ tab="car"; draw(); });
-$("ct-msg").addEventListener("click", function(){ tab="msg"; draw(); });
-load();
-setInterval(load, 45000);
-</script>
+<script src="my.js"></script>
 </body>
 </html>
