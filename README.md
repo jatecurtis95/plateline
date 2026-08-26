@@ -21,7 +21,7 @@ pages therefore live on a normal static host and call the API across origins.
 
 | File | What it is |
 | --- | --- |
-| `index.html` | Operator board. Passcode sign-in, ten-stage pipeline, inbox, notification settings. |
+| `index.html` | Operator board. Passcode sign-in, ten-stage pipeline shown as four phase columns, inbox, notification settings. |
 | `my.html` | Client dashboard. Opened from a signed link, shows only that client's car. |
 | `app.css` | Shared stylesheet. Light and dark, driven by CSS custom properties. |
 

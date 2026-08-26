@@ -42,6 +42,58 @@ function fmtDate(d) {
   return isNaN(x) ? d : x.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/* Stages carry a `phase`. Ten narrow columns holding five cars is eight
+   columns reading "0"; four phase columns fill the width instead. If the
+   API ever stops sending `phase`, fall back to slicing the stage list into
+   four even groups so the board still draws. */
+var PHASE_FALLBACK = ["Approval", "Workshop", "Inspection", "Registration"];
+function titleish(s) {
+  return String(s || "").replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+}
+function phaseKey(st, i, n) {
+  if (st && st.phase) return String(st.phase);
+  var per = Math.ceil((n || 1) / PHASE_FALLBACK.length) || 1;
+  return PHASE_FALLBACK[Math.min(PHASE_FALLBACK.length - 1, Math.floor(i / per))];
+}
+function phases() {
+  var out = [], seen = {};
+  S.stages.forEach(function (st, i) {
+    var k = phaseKey(st, i, S.stages.length);
+    if (!seen[k]) { seen[k] = { key: k, label: titleish(k), stages: [] }; out.push(seen[k]); }
+    seen[k].stages.push(st);
+  });
+  return out;
+}
+function countAt(stageId) {
+  return S.cars.filter(function (c) { return c.stage === stageId; }).length;
+}
+function docCount(c) { return (c.docs || []).length; }
+function stageStep(id) { var i = stageIdx(id); return i > -1 ? i + 1 : 0; }
+
+/* The bar under a stage name: "3 of 10", drawn. */
+function progress(stageId) {
+  var n = S.stages.length, k = stageStep(stageId);
+  if (!n || !k) return "";
+  return '<span class="prog" title="Stage ' + k + " of " + n + '">' +
+    '<span class="ptrk"><i style="width:' + Math.round((k / n) * 100) + '%"></i></span>' +
+    '<span class="pct mono">' + k + " of " + n + "</span></span>";
+}
+
+/* Every stage, its live count, each one a link into the board. */
+function pipeStrip(active) {
+  if (!S.stages.length) return "";
+  var cells = S.stages.map(function (st) {
+    var k = countAt(st.id);
+    return '<a class="pcell' + (k ? " has" : "") + (st.id === active ? " on" : "") +
+      '" href="#/board/' + esc(st.id) + '">' +
+      '<span class="pnum mono">' + k + "</span>" +
+      '<span class="ptrack"><i></i></span>' +
+      '<span class="plab">' + esc(st.op_label) + "</span></a>";
+  }).join("");
+  return '<div class="pipe">' + cells + "</div>";
+}
+
 async function api(path, body) {
   var o = { method: body ? "POST" : "GET", headers: { "content-type": "application/json" } };
   var t = tok(); if (t) o.headers.authorization = "Bearer " + t;
@@ -113,7 +165,7 @@ function render() {
   $("pip-today").textContent = unread || "";
 
   var m = $("main");
-  if (r.view === "board") return viewBoard(m);
+  if (r.view === "board") return viewBoard(m, r.id);
   if (r.view === "jobs") return viewJobs(m);
   if (r.view === "clients") return viewClients(m);
   if (r.view === "client") return viewClient(m, r.id);
@@ -148,10 +200,16 @@ function viewToday(m) {
       : c.hold ? c.hold : c.days + " days in " + ((stageOf(c.stage) || {}).op_label || "");
     var cls = c.unread ? "chip bad" : c.hold ? "chip warn" : ageChip(c.days);
     var cl = clientById(c.client_id) || {};
+    var st = stageOf(c.stage) || {};
+    var tail = [];
+    if (c.plate_no) tail.push(esc(c.plate_no));
+    if (c.workshop) tail.push(esc(c.workshop));
     return '<a class="rw" href="#/job/' + c.id + '">' +
       '<span class="ava">' + esc(initials(cl.name)) + "</span>" +
-      '<span class="mid"><span class="nm">' + esc(cl.name || "") + "</span>" +
-      '<span class="sub">' + esc(c.description) + "</span></span>" +
+      '<span class="mid"><span class="nm">' + esc(c.description) + "</span>" +
+      '<span class="sub">' + esc(cl.name || "") +
+      " &middot; " + esc(st.op_label || "") +
+      (tail.length ? " &middot; " + tail.join(" &middot; ") : "") + "</span></span>" +
       '<span class="' + cls + '">' + esc(why) + "</span>" +
       '<span class="go">&rsaquo;</span></a>';
   }).join("");
@@ -163,8 +221,10 @@ function viewToday(m) {
     '<button class="count bad" data-go="#/jobs"><b>' + ask + '</b><span class="lbl">Unread questions</span></button>' +
     '<button class="count" data-go="#/jobs"><b>' + done + '</b><span class="lbl">Finished</span></button>' +
     "</div>" +
+    pipeStrip("") +
     '<div class="cols2"><div>' +
-      '<div class="panel"><header><span class="lbl">Needs you</span></header>' +
+      '<div class="panel"><header><span class="lbl">Needs you</span>' +
+      (need.length ? '<span class="chip">' + need.length + "</span>" : "") + "</header>" +
       (rows ? '<div class="rows">' + rows + "</div>"
             : '<div class="empty">' + (S.cars.length ? "Nothing outstanding." : "No cars yet.") +
               (S.cars.length ? "" : '<br><a class="btn" href="#/job/new">Add a car</a>') + "</div>") +
@@ -187,35 +247,67 @@ function viewToday(m) {
 
 /* ----------------------------------------------------------------- board */
 
-function viewBoard(m) {
-  var cols = S.stages.map(function (st, si) {
-    var rows = S.cars.filter(function (c) { return c.stage === st.id; });
+function viewBoard(m, focus) {
+  var st = focus ? stageOf(focus) : null;
+  var cols = phases().map(function (p) {
+    var ids = {};
+    p.stages.forEach(function (s) { ids[s.id] = true; });
+    var rows = S.cars.filter(function (c) { return ids[c.stage]; })
+      .sort(function (a, b) { return stageIdx(a.stage) - stageIdx(b.stage) || b.days - a.days; });
+
     var cards = rows.map(function (c) {
       var cl = clientById(c.client_id) || {};
+      var si = stageIdx(c.stage);
+      var cst = S.stages[si] || {};
       var next = S.stages[si + 1];
-      return '<div class="card">' +
+      var facts = [];
+      if (c.plate_no) facts.push('<span class="chip mono">' + esc(c.plate_no) + "</span>");
+      if (c.workshop) facts.push('<span class="chip soft">' + esc(c.workshop) + "</span>");
+      if (docCount(c)) facts.push('<span class="chip soft">' + docCount(c) +
+        (docCount(c) === 1 ? " doc" : " docs") + "</span>");
+
+      return '<div class="card' + (focus && c.stage === focus ? " hit" : "") + '"' +
+        (focus && c.stage === focus ? ' data-focus="1"' : "") + ">" +
         '<a class="open" href="#/job/' + c.id + '">' +
+        '<span class="stg">' + esc(cst.op_label || "") + "</span>" +
         '<span class="car">' + esc(c.description) + "</span>" +
         '<span class="who">' + esc(cl.name || "") + "</span>" +
-        '<span class="chips"><span class="' + ageChip(c.days) + '">' + c.days + "d</span>" +
+        '<span class="chips">' +
+        '<span class="' + ageChip(c.days) + '">' + c.days + "d</span>" +
         (c.hold ? '<span class="chip hold">' + esc(c.hold) + "</span>" : "") +
         (c.unread ? '<span class="chip bad">' + c.unread + " new</span>" : "") +
-        "</span></a>" +
-        (next ? '<button class="adv" data-next="' + c.id + '" data-to="' + next.id + '">Move to ' + esc(next.op_label) + "</button>" : "") +
+        "</span>" +
+        (facts.length ? '<span class="chips facts">' + facts.join("") + "</span>" : "") +
+        "</a>" +
+        (next ? '<button class="adv" data-next="' + c.id + '" data-to="' + next.id +
+          '">Move to ' + esc(next.op_label) + "</button>" : "") +
         "</div>";
     }).join("");
-    return '<div class="col' + (si === S.stages.length - 1 ? " last" : "") + '">' +
-      '<div class="col-h"><span class="lbl">' + esc(st.op_label) + '</span><span class="n">' + rows.length + "</span></div>" +
-      (cards || '<div class="col-empty">&mdash;</div>') + "</div>";
+
+    var isEnd = p.stages.some(function (s) { return isLast(s.id); });
+    return '<section class="col' + (isEnd ? " last" : "") + '">' +
+      '<div class="col-h"><span class="lbl">' + esc(p.label) + "</span>" +
+      '<span class="n mono">' + rows.length + "</span></div>" +
+      '<div class="col-sub">' + p.stages.map(function (s) {
+        return esc(s.op_label) + " " + countAt(s.id);
+      }).join(" &middot; ") + "</div>" +
+      (cards || '<div class="col-empty">Nothing here</div>') + "</section>";
   }).join("");
 
-  m.innerHTML = head("Board") + '<div class="board"><div class="cols">' + cols + "</div></div>";
+  m.innerHTML = head("Board", "", st
+      ? "Highlighting <b>" + esc(st.op_label) + "</b> &middot; " +
+        '<a href="#/board">show the whole board</a>'
+      : "") +
+    '<div class="board"><div class="cols">' + cols + "</div></div>";
+
   m.querySelectorAll("[data-next]").forEach(function (b) {
     b.addEventListener("click", async function () {
       b.disabled = true;
       await moveStage(b.getAttribute("data-next"), b.getAttribute("data-to"), "");
     });
   });
+  var first = m.querySelector("[data-focus]");
+  if (first && first.scrollIntoView) first.scrollIntoView({ block: "nearest" });
 }
 
 /* ------------------------------------------------------------------ cars */
@@ -223,13 +315,12 @@ function viewBoard(m) {
 var jobQuery = "";
 function jobRows() {
   var q = jobQuery.toLowerCase();
-  var list = S.cars.filter(function (c) {
+  return S.cars.filter(function (c) {
     if (!q) return true;
     var cl = clientById(c.client_id) || {};
-    return (c.description + " " + c.chassis + " " + (cl.name || "") + " " + c.plate_no).toLowerCase().indexOf(q) > -1;
+    return (c.description + " " + c.chassis + " " + (cl.name || "") + " " +
+      (cl.company || "") + " " + c.plate_no + " " + (c.workshop || "")).toLowerCase().indexOf(q) > -1;
   }).sort(function (a, b) { return stageIdx(a.stage) - stageIdx(b.stage) || b.days - a.days; });
-
-  return list;
 }
 
 function fillJobRows(m) {
@@ -238,29 +329,42 @@ function fillJobRows(m) {
     var cl = clientById(c.client_id) || {};
     var st = stageOf(c.stage) || {};
     return '<tr data-open="' + c.id + '">' +
-      "<td><b>" + esc(c.description) + "</b><br><span class=\"mono\" style=\"font-size:11px;color:var(--faint)\">" + esc(c.chassis) + "</span></td>" +
-      "<td>" + esc(cl.name || "") + "</td>" +
-      '<td><span class="chip ' + (isLast(c.stage) ? "done" : "stage") + '">' + esc(st.op_label || "") + "</span></td>" +
+      "<td><b>" + esc(c.description) + "</b><br>" +
+      '<span class="mono sub-xs">' + esc(c.chassis) + "</span></td>" +
+      "<td>" + esc(cl.name || "") +
+      (cl.company ? '<br><span class="sub-xs">' + esc(cl.company) + "</span>" : "") + "</td>" +
+      '<td><span class="chip ' + (isLast(c.stage) ? "done" : "stage") + '">' + esc(st.op_label || "") + "</span>" +
+      progress(c.stage) + "</td>" +
+      '<td class="opt mono">' + (c.plate_no ? esc(c.plate_no) : '<span class="none">not issued</span>') + "</td>" +
+      '<td class="opt">' + (c.workshop ? esc(c.workshop) : '<span class="none">&mdash;</span>') + "</td>" +
       '<td class="opt"><span class="' + ageChip(c.days) + '">' + c.days + "d</span></td>" +
       '<td class="opt">' + (c.hold ? '<span class="chip warn">' + esc(c.hold) + "</span>" : "") + "</td>" +
-      '<td class="opt mono" style="font-size:11.5px">' + esc(fmtDate(c.eta_ready)) + "</td>" +
+      '<td class="opt mono sub-xs">' + esc(fmtDate(c.eta_ready)) + "</td>" +
       "<td>" + (c.unread ? '<span class="chip bad">' + c.unread + "</span>" : "") + "</td></tr>";
   }).join("");
+
   var tb = m.querySelector("tbody");
-  tb.innerHTML = body || '<tr><td colspan="7"><div class="empty">No cars match.</div></td></tr>';
+  tb.innerHTML = body || '<tr><td colspan="9"><div class="empty">No cars match.</div></td></tr>';
   tb.querySelectorAll("[data-open]").forEach(function (tr) {
     tr.addEventListener("click", function () { go("#/job/" + tr.getAttribute("data-open")); });
   });
+  var cnt = $("jcount");
+  if (cnt) cnt.textContent = list.length === S.cars.length
+    ? S.cars.length + (S.cars.length === 1 ? " car" : " cars")
+    : list.length + " of " + S.cars.length;
 }
 
 function viewJobs(m) {
   m.innerHTML = head("Cars") +
     '<div class="row" style="margin-bottom:14px">' +
-    '<input id="jq" type="search" placeholder="Search car, chassis, client or plate" style="max-width:320px" value="' + esc(jobQuery) + '">' +
-    '<button class="btn" id="newcar">Add a car</button></div>' +
+    '<input id="jq" type="search" placeholder="Search car, chassis, client, plate or workshop" ' +
+    'style="max-width:320px" value="' + esc(jobQuery) + '">' +
+    '<span class="cnt mono" id="jcount"></span>' +
+    '<button class="btn" id="newcar" style="margin-left:auto">Add a car</button></div>' +
     '<div class="panel"><div class="tblwrap"><table class="tbl">' +
     "<thead><tr><th>Car</th><th>Client</th><th>Stage</th>" +
-    '<th class="opt">In stage</th><th class="opt">Waiting on</th><th class="opt">Ready</th><th></th></tr></thead>' +
+    '<th class="opt">Plate</th><th class="opt">Workshop</th><th class="opt">In stage</th>' +
+    '<th class="opt">Waiting on</th><th class="opt">Ready</th><th></th></tr></thead>' +
     "<tbody></tbody></table></div></div>";
   fillJobRows(m);
 
@@ -484,21 +588,110 @@ function viewNewJob(m) {
 
 /* --------------------------------------------------------------- clients */
 
-function viewClients(m) {
-  var rows = S.clients.map(function (c) {
-    var cars = carsOf(c.id);
-    var unread = cars.reduce(function (n, x) { return n + x.unread; }, 0);
-    return '<a class="rw" href="#/client/' + c.id + '">' +
-      '<span class="ava">' + esc(initials(c.name)) + "</span>" +
-      '<span class="mid"><span class="nm">' + esc(c.name) + "</span>" +
-      '<span class="sub">' + (c.company ? esc(c.company) + " &middot; " : "") +
-      cars.length + (cars.length === 1 ? " car" : " cars") + "</span></span>" +
-      (unread ? '<span class="chip bad">' + unread + "</span>" : "") +
-      '<span class="go">&rsaquo;</span></a>';
+/* The payload has always carried the phone, the email, the note, the
+   notification switches and every car with its stage, age, hold and unread
+   count. The old page fetched all of it and drew a name. */
+
+var clientQuery = "";
+
+function clientList() {
+  var q = clientQuery.toLowerCase();
+  return S.clients.filter(function (c) {
+    if (!q) return true;
+    var hay = [c.name, c.company, c.phone, c.email, c.note].join(" ");
+    carsOf(c.id).forEach(function (v) {
+      hay += " " + v.description + " " + v.chassis + " " + v.plate_no + " " + (v.workshop || "");
+    });
+    return hay.toLowerCase().indexOf(q) > -1;
+  }).sort(function (a, b) {
+    var ua = carsOf(a.id).reduce(function (n, x) { return n + x.unread; }, 0);
+    var ub = carsOf(b.id).reduce(function (n, x) { return n + x.unread; }, 0);
+    return (ub - ua) || String(a.name || "").localeCompare(String(b.name || ""));
+  });
+}
+
+function clientCard(c) {
+  var cars = carsOf(c.id);
+  var unread = cars.reduce(function (n, x) { return n + x.unread; }, 0);
+  var live = cars.filter(function (x) { return !isLast(x.stage); }).length;
+
+  var contact = [];
+  if (c.phone) contact.push('<a class="ct" href="tel:' + esc(String(c.phone).replace(/\s+/g, "")) +
+    '"><span class="k">Mobile</span><span class="v mono">' + esc(c.phone) + "</span></a>");
+  if (c.email) contact.push('<a class="ct" href="mailto:' + esc(c.email) +
+    '"><span class="k">Email</span><span class="v">' + esc(c.email) + "</span></a>");
+  if (!c.phone && !c.email) contact.push('<span class="ct"><span class="k">Contact</span>' +
+    '<span class="v none">nothing on file</span></span>');
+
+  var offs = [];
+  if (!c.notify_sms) offs.push("texts");
+  if (!c.notify_email) offs.push("emails");
+  var warn = offs.length
+    ? '<div class="cwarn">' + (offs.length === 2
+        ? "They have switched off both texts and emails, so stage updates reach them nowhere."
+        : "They have switched off " + offs[0] + ", so stage updates only go out by " +
+          (offs[0] === "texts" ? "email" : "text") + ".") + "</div>"
+    : "";
+
+  var rows = cars.map(function (v) {
+    var st = stageOf(v.stage) || {};
+    var sub = [];
+    if (v.plate_no) sub.push(esc(v.plate_no));
+    else if (v.chassis) sub.push('<span class="mono">' + esc(v.chassis) + "</span>");
+    if (v.workshop) sub.push(esc(v.workshop));
+    return '<a class="crow" href="#/job/' + v.id + '">' +
+      '<span class="mid"><span class="nm">' + esc(v.description) + "</span>" +
+      '<span class="sub">' + sub.join(" &middot; ") + "</span></span>" +
+      '<span class="rt">' +
+      '<span class="chip ' + (isLast(v.stage) ? "done" : "stage") + '">' + esc(st.op_label || "") + "</span>" +
+      '<span class="chips">' +
+      '<span class="' + ageChip(v.days) + '">' + v.days + "d</span>" +
+      (v.unread ? '<span class="chip bad">' + v.unread + " new</span>" : "") +
+      (v.eta_ready ? '<span class="chip soft mono">' + esc(fmtDate(v.eta_ready)) + "</span>" : "") +
+      "</span>" +
+      (v.hold ? '<span class="waiting">Waiting on ' + esc(v.hold) + "</span>" : "") +
+      "</span></a>";
   }).join("");
 
-  m.innerHTML = head("Clients") + '<div class="panel">' +
-    (rows ? '<div class="rows">' + rows + "</div>" : '<div class="empty">No clients yet.</div>') + "</div>";
+  return '<article class="cli">' +
+    '<header><span class="ava">' + esc(initials(c.name)) + "</span>" +
+    '<span class="mid"><a class="nm" href="#/client/' + c.id + '">' + esc(c.name) + "</a>" +
+    '<span class="sub">' + (c.company ? esc(c.company) + " &middot; " : "") +
+    cars.length + (cars.length === 1 ? " car" : " cars") +
+    (live && live !== cars.length ? ", " + live + " live" : "") + "</span></span>" +
+    (unread ? '<span class="chip bad">' + unread + " unread</span>" : "") +
+    '<a class="back" href="#/client/' + c.id + '">Open</a></header>' +
+    '<div class="cts">' + contact.join("") + "</div>" +
+    warn +
+    (cars.length ? '<div class="crows">' + rows + "</div>"
+                 : '<div class="empty" style="padding:16px">No cars on this client.</div>') +
+    (c.note ? '<div class="cnote"><span class="lbl">Office note</span>' + esc(c.note) + "</div>" : "") +
+    "</article>";
+}
+
+function fillClients(m) {
+  var list = clientList();
+  var host = $("clist");
+  host.innerHTML = list.length
+    ? '<div class="clients">' + list.map(clientCard).join("") + "</div>"
+    : '<div class="panel"><div class="empty">' +
+      (S.clients.length ? "No clients match." : "No clients yet.") + "</div></div>";
+  var cnt = $("ccount");
+  if (cnt) cnt.textContent = list.length === S.clients.length
+    ? S.clients.length + (S.clients.length === 1 ? " client" : " clients")
+    : list.length + " of " + S.clients.length;
+}
+
+function viewClients(m) {
+  m.innerHTML = head("Clients") +
+    '<div class="row" style="margin-bottom:14px">' +
+    '<input id="cq" type="search" placeholder="Search name, company, phone, email or car" ' +
+    'style="max-width:340px" value="' + esc(clientQuery) + '">' +
+    '<span class="cnt mono" id="ccount"></span></div>' +
+    '<div id="clist"></div>';
+  fillClients(m);
+  var qi = $("cq");
+  qi.addEventListener("input", function () { clientQuery = qi.value; fillClients(m); });
 }
 
 function viewClient(m, id) {

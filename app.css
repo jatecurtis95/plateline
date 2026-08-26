@@ -1,3 +1,6 @@
+/* The hidden attribute loses to display:grid on .shell, so state it plainly. */
+[hidden]{display:none !important}
+
 :root{
   --ground:#E4E8E7; --surface:#F6F8F7; --surface-2:#EDF1F0;
   --ink:#14181A; --ink-2:#3D4749; --mute:#66716F; --faint:#8A9391;
@@ -168,24 +171,33 @@ label.field > span{display:block;font-size:10px;font-weight:700;letter-spacing:.
   max-width:220px;overflow:hidden;text-overflow:ellipsis}
 
 /* ---- board ---- */
-.board{overflow-x:auto;padding-bottom:16px;scrollbar-width:thin}
-.cols{display:flex;gap:9px;min-width:min-content;align-items:flex-start}
-.col{flex:0 0 210px;background:var(--surface-2);border:1px solid var(--hair);border-radius:8px;padding:8px}
-.col-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:0 2px 8px}
-.col-h .n{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--faint)}
+/* Four phase columns that fill the width. Ten columns holding five cars
+   meant eight of them read "0". */
+.board{padding-bottom:16px}
+.cols{display:grid;gap:10px;align-items:start;
+  grid-template-columns:repeat(auto-fit,minmax(232px,1fr))}
+.col{background:var(--surface-2);border:1px solid var(--hair);border-radius:8px;padding:8px;min-width:0}
+.col-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:0 2px 2px}
+.col-h .n{font-size:12px;color:var(--faint)}
+.col-sub{font-size:10.5px;color:var(--faint);padding:0 2px 8px;line-height:1.45;
+  border-bottom:1px solid var(--hair);margin-bottom:8px}
 .col.last{background:var(--good-tint);border-color:var(--accent-line)}
 .card{background:var(--surface);border:1px solid var(--hair);border-radius:6px;margin-bottom:6px;
-  transition:border-color .12s}
+  transition:border-color .12s;min-width:0}
 .card:hover{border-color:var(--accent)}
-.card a.open{display:block;padding:9px 10px;text-decoration:none;color:inherit}
+.card.hit{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-tint)}
+.card a.open{display:block;padding:9px 10px;text-decoration:none;color:inherit;min-width:0}
+.card .stg{display:block;font-size:9.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card .car{display:block;font-size:12.5px;font-weight:600;line-height:1.3}
 .card .who{display:block;font-size:11.5px;color:var(--mute);margin-top:2px}
 .card .chips{margin-top:6px}
+.card .chips.facts{margin-top:4px}
 .card .adv{display:block;width:100%;font:inherit;font-size:11.5px;font-weight:600;text-align:left;
   background:none;color:var(--accent);border:0;border-top:1px solid var(--hair);
   padding:6px 10px;cursor:pointer;border-radius:0 0 5px 5px}
 .card .adv:hover{background:var(--accent-tint)}
-.col-empty{font-size:11.5px;color:var(--faint);padding:2px 4px 6px;font-family:"IBM Plex Mono",monospace}
+.col-empty{font-size:11.5px;color:var(--faint);padding:10px 4px 12px;text-align:center}
 
 /* ---- table ---- */
 .tbl{width:100%;border-collapse:collapse;font-size:13px}
@@ -245,6 +257,81 @@ label.field > span{display:block;font-size:10px;font-weight:700;letter-spacing:.
   transition:opacity .18s,transform .18s;max-width:calc(100vw - 30px)}
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 @media(prefers-reduced-motion:reduce){*{transition-duration:.01ms !important}}
+
+/* ---- pipeline strip ---- */
+/* All ten stages with their live counts. Each cell opens the board with
+   that stage highlighted. */
+.pipe{display:grid;gap:2px;margin:0 0 18px;
+  grid-template-columns:repeat(auto-fit,minmax(74px,1fr))}
+.pcell{display:block;text-decoration:none;color:inherit;padding:8px 6px 9px;border-radius:6px;
+  min-width:0;background:var(--surface);border:1px solid var(--hair)}
+.pcell:hover{background:var(--surface-2);border-color:var(--accent-line)}
+.pcell.on{border-color:var(--accent);background:var(--accent-tint)}
+.pcell .pnum{display:block;font-size:19px;font-weight:700;line-height:1.05;color:var(--faint)}
+.pcell.has .pnum{color:var(--ink)}
+.pcell .ptrack{display:block;height:3px;border-radius:2px;background:var(--hair);margin:6px 0 6px}
+.pcell.has .ptrack{background:var(--accent)}
+.pcell .plab{display:block;font-size:10.5px;line-height:1.3;color:var(--mute);
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.pcell.has .plab{color:var(--ink-2)}
+@media(max-width:700px){
+  .pipe{grid-auto-flow:column;grid-template-columns:none;grid-auto-columns:96px;
+    overflow-x:auto;scrollbar-width:none;padding-bottom:4px}
+}
+
+/* ---- stage progress ---- */
+.prog{display:flex;align-items:center;gap:6px;margin-top:5px;max-width:150px}
+.ptrk{flex:1;height:3px;border-radius:2px;background:var(--hair);overflow:hidden;min-width:40px}
+.ptrk i{display:block;height:100%;background:var(--accent)}
+.pct{font-size:10px;color:var(--faint);white-space:nowrap}
+
+/* ---- small type used in tables ---- */
+.sub-xs{font-size:11px;color:var(--faint)}
+.none{color:var(--faint)}
+.cnt{font-size:11.5px;color:var(--faint);white-space:nowrap}
+.chip.soft{background:var(--surface-2);color:var(--mute);border:1px solid var(--hair)}
+
+/* ---- clients ---- */
+.clients{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(370px,1fr));
+  align-items:start}
+@media(max-width:520px){.clients{grid-template-columns:1fr}}
+.cli{background:var(--surface);border:1px solid var(--hair);border-radius:9px;
+  box-shadow:var(--shadow);overflow:hidden;min-width:0}
+.cli > header{display:flex;align-items:center;gap:10px;padding:11px 14px;
+  border-bottom:1px solid var(--hair);background:var(--surface-2)}
+.cli > header .mid{flex:1;min-width:0}
+.cli > header .nm{display:block;font-size:14px;font-weight:700;color:var(--ink);
+  text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cli > header .nm:hover{color:var(--accent)}
+.cli > header .sub{display:block;font-size:11.5px;color:var(--mute);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px;background:var(--hair)}
+.ct{display:block;padding:9px 14px;background:var(--surface);text-decoration:none;color:inherit;min-width:0}
+a.ct:hover{background:var(--surface-2)}
+.ct .k{display:block;font-size:9.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--faint)}
+.ct .v{display:block;font-size:12.5px;color:var(--ink-2);margin-top:1px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+a.ct:hover .v{color:var(--accent)}
+.cwarn{font-size:12px;line-height:1.45;color:var(--ink);background:var(--warn-tint);
+  border-top:1px solid var(--warn);border-bottom:1px solid var(--warn);padding:8px 14px}
+.crows{display:flex;flex-direction:column;border-top:1px solid var(--hair)}
+.crow{display:flex;align-items:flex-start;gap:10px;padding:10px 14px;text-decoration:none;
+  color:inherit;border-bottom:1px solid var(--hair);min-width:0}
+.crow:last-child{border-bottom:0}
+.crow:hover{background:var(--surface-2)}
+.crow .mid{flex:1;min-width:0}
+.crow .nm{display:block;font-size:13px;font-weight:600;color:var(--ink);line-height:1.3;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.crow .sub{display:block;font-size:11px;color:var(--mute);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.crow .rt{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:0 0 auto;max-width:46%}
+.crow .rt .chips{justify-content:flex-end}
+.crow .waiting{font-size:10.5px;color:var(--warn);text-align:right;line-height:1.3}
+.cnote{font-size:12.5px;line-height:1.5;color:var(--ink-2);padding:10px 14px;
+  border-top:1px solid var(--hair);background:var(--surface-2)}
+.cnote .lbl{display:block;margin-bottom:2px}
 
 /* ---- client page ---- */
 body.client{background:var(--ground)}
