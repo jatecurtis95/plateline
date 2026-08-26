@@ -104,8 +104,11 @@ function docCount(c) { return (c.docs || []).length; }
 /* A photo of the car, shown next to it wherever it is listed. The first
    image on the car is the one used. Signed URLs are cached for ten minutes
    so the thirty-second poll does not re-sign every thumbnail. */
+/* Signed URLs are kept until one actually stops working. Re-signing on a
+   timer changes the URL, which misses the browser cache and re-downloads
+   every thumbnail on the board - at 75 cars that is hundreds of megabytes
+   an hour, per operator. Re-sign on failure instead, once. */
 var opShot = {};
-var SHOT_TTL = 10 * 60 * 1000;
 
 function isPhotoDoc(d) {
   if (d && d.content_type) return /^image\//i.test(d.content_type);
@@ -123,18 +126,30 @@ function thumb(c, cls, fallback) {
   return '<span class="' + k + '"><img data-thumb="' + esc(d.id) + '" alt="">' +
     (fallback ? '<i class="fb">' + fallback + "</i>" : "") + "</span>";
 }
+async function signDoc(id) {
+  if (opShot[id]) return opShot[id];
+  var r = await api("/api/op/doc/url", { id: id });
+  if (!r || !r.url) return null;
+  opShot[id] = r.url;
+  return r.url;
+}
+
 function fillThumbs() {
   document.querySelectorAll("img[data-thumb]").forEach(async function (img) {
-    var id = img.getAttribute("data-thumb"), now = Date.now();
-    var hit = opShot[id];
-    if (!hit || now - hit.at > SHOT_TTL) {
-      var r = await api("/api/op/doc/url", { id: id });
-      if (!r || !r.url) return;
-      opShot[id] = hit = { url: r.url, at: now };
-    }
+    var id = img.getAttribute("data-thumb");
+    var url = await signDoc(id);
+    if (!url) return;
     img.addEventListener("load", function () { img.parentNode.classList.add("on"); });
-    img.addEventListener("error", function () { img.parentNode.classList.remove("on"); });
-    img.src = hit.url;
+    img.addEventListener("error", async function () {
+      img.parentNode.classList.remove("on");
+      // One retry, and only for an expired link: drop the cached URL and re-sign.
+      if (img.getAttribute("data-retried")) return;
+      img.setAttribute("data-retried", "1");
+      delete opShot[id];
+      var fresh = await signDoc(id);
+      if (fresh) img.src = fresh;
+    });
+    img.src = url;
   });
 }
 function stageStep(id) { var i = stageIdx(id); return i > -1 ? i + 1 : 0; }
