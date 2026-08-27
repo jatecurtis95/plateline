@@ -3,9 +3,13 @@
 The work standing between the board as it is today and a board that holds up at
 twenty-five cars a month, with what each piece costs to run.
 
-Item 4 is built. Everything else is parked until Wasam wants to go live.
+Item 4 is built. Items 6 and 7 — proper sign-in, and clients paying from the
+portal — are new asks specced but not started. Everything else is parked until
+Wasam wants to go live.
 
-Written 26 August 2026.
+**Six of the seven items are waiting on the same thing: item zero.**
+
+Written 26 August 2026, updated 27 August.
 
 ## Where it stands today
 
@@ -144,6 +148,98 @@ Registration — *are* hardcoded, at `PHASE_NAMES` in `app.js`. Stage names are
 editable; the four phases above them are not. If Wasam wants those reworded
 too, that is a code change, or a new API field the front end should prefer.
 
+## Asked for since
+
+These are new features rather than scale problems, so they sit apart from the
+list above. Both need the edge function, so both are behind item zero.
+
+### 6. Username and password, instead of a passcode alone
+
+Sign-in today posts `{ passcode }` and nothing else ([app.js:208](app.js#L208)).
+There is no username field. The API works out who you are from *which* passcode
+matched, which is where the name on the token comes from and how the `who` on
+stage history gets filled in.
+
+The sharp edge: **passcodes have to be unique across the whole team.** Two
+people who pick the same one are the same person as far as the board is
+concerned — whoever matches first wins, and the other signs in under their name,
+on every stage move they make. Nothing warns anyone. There is also no username
+for a password manager to key off, which pushes people toward short memorable
+passcodes.
+
+**The change:**
+
+- A `username` column on the staff record, unique, and a username field on the
+  sign-in form.
+- `/api/login` verifies the pair rather than looking up by passcode.
+- `/api/op/staff/save` takes and validates a username, rejecting duplicates.
+- Existing people need a username backfilled before the old path is turned off.
+  Derive one from the name, or have each person set theirs on next sign-in.
+
+Signed tokens already issued keep working — they carry the identity, not the
+passcode — so nobody is forced out mid-job by the change itself.
+
+**Two things worth fixing while auth is open, neither of them cosmetic:**
+
+- **The stored hash is plain SHA-256.** Unsalted SHA-256 is built to be fast,
+  which is precisely wrong for a password: commodity hardware tries billions a
+  second, and identical passcodes produce identical hashes, so a leaked table
+  shows you who shares one. Moving to bcrypt or argon2id with a per-user salt is
+  a small change while the login path is already being touched, and an awkward
+  migration later.
+- **No rate limiting was found on login.** Worth confirming in the function
+  source — a passcode-only door with unlimited attempts is guessable in a way a
+  username-and-password door is not.
+
+### 7. Clients pay from the portal
+
+**Decided:** Stripe hosted Checkout; the amount is set by the operator per car;
+whether the client can pay is controlled by a setting, either as soon as an
+amount is on the car or once the car reaches a nominated stage.
+
+Hosted Checkout matters for a reason beyond convenience: card details never
+touch Plateline or Supabase, which keeps the PCI burden near zero. Do not
+replace it with a card form on the portal.
+
+**Schema** — a new `invoices` table rather than columns on `vehicles`, so a car
+can carry more than one charge later without a migration:
+
+    id, vehicle_id, amount_cents, currency, status,
+    stripe_session_id, stripe_payment_intent, created_at, paid_at
+
+**Endpoints:**
+
+| Endpoint | Does |
+| --- | --- |
+| `/api/op/invoice/save` | Operator sets or changes the amount on a car |
+| `/api/client/checkout` | Creates a Checkout Session, returns the URL to redirect to |
+| `/api/stripe/webhook` | Stripe calls this on payment; verifies signature, marks paid |
+
+**Three rules that are not negotiable:**
+
+- **The amount comes from the database, never from the client.** A price posted
+  by the browser is a price the customer can edit.
+- **Paid is set by the webhook, never by the return redirect.** A client landing
+  back on the success URL proves nothing — they can visit it directly.
+- **The webhook must verify the Stripe signature.** An unverified webhook
+  endpoint is an open "mark this paid" button on the public internet.
+
+**Client portal** (`my.js`): amount owing and a Pay button, subject to the
+visibility setting, then a redirect out to Stripe and back. Paid cars show a
+receipt line rather than a button.
+
+**Operator board** (`app.js`): a payment chip on each car in the existing lists,
+and a view listing who has paid and who has not, which is the part Wasam
+actually asked for. The unpaid list is the useful one — sort it by how long the
+amount has been sitting there.
+
+**Secrets** — `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` in the Supabase
+project, alongside the Resend and Twilio ones. Never in this repo.
+
+**Still to decide:** whether GST needs to appear on what the client sees. If the
+business is registered, the invoice should show it rather than burying it in a
+single figure. That is an accounting question, not an engineering one.
+
 ## What it costs to run, at 25 cars a month
 
 USD list prices, August 2026.
@@ -155,6 +251,14 @@ USD list prices, August 2026.
 | Resend email | $0 | 250 emails sits inside the free tier. |
 | Vercel | $0 | Static hosting. |
 | **Total** | **~$38** | |
+
+Stripe is not in that table because it is a percentage rather than a
+subscription: roughly **1.75% + A$0.30** per domestic card, about 3.5% + A$0.30
+international. It scales with what is charged, not with how many cars are on the
+board, so it belongs in the price of the job rather than in running costs. On a
+$1,500 compliance fee that is about $27 a car — larger than the entire hosting
+bill, and worth Wasam seeing before it is switched on. Confirm the current rate;
+this is list pricing and it moves.
 
 Storage is the only figure that moves with the downscale decision: 18GB in
 year one at full size, about 3GB resized. Both fit inside Pro, so item 4 buys
@@ -170,6 +274,13 @@ headroom rather than an immediate saving.
 3. **The wording of the ten stages.** Not needed to *build* item 5 — the screen
    can be built without knowing the words. Needed before Wasam gets any value
    from it.
+4. **Whether GST shows on what the client sees.** Needed to finish item 7.
+5. **Usernames for the people who already have passcodes.** Needed to migrate
+   item 6 without locking anyone out.
+
+Settled on 27 August 2026: Stripe hosted Checkout, the amount set per car by the
+operator, and payment visibility as a setting — either as soon as an amount is
+on the car, or once it reaches a nominated stage.
 
 ## Picking this up cold
 
