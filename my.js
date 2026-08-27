@@ -39,6 +39,14 @@ function fmtDate(d) {
     setTok(t); u.searchParams.delete("t");
     history.replaceState({}, "", u.pathname + (u.search || "") + u.hash);
   }
+  // Coming back from Stripe. This only says the customer finished at Stripe -
+  // the record is marked paid by the webhook, not by anyone arriving here,
+  // so the page still shows whatever the API says a moment later.
+  if (u.searchParams.get("paid")) {
+    u.searchParams.delete("paid");
+    history.replaceState({}, "", u.pathname + (u.search || "") + u.hash);
+    setTimeout(function () { toast("Thank you. Your payment is going through."); }, 300);
+  }
 })();
 
 async function api(path, body) {
@@ -127,6 +135,38 @@ function stepDate(v, st) {
   return hit ? hit.when : "";
 }
 
+/* ---------------------------------------------------------------- paying */
+
+/* The amount, and a way to pay it. The API leaves the invoice out of the
+   payload altogether until the client is meant to see it, so there is nothing
+   to hide here - if `invoice` is absent there is nothing to show.
+
+   The figure is whatever the API says. Nothing here computes a price, and
+   nothing here is sent back when paying: the amount charged is read from the
+   invoice server-side, where the customer cannot reach it. */
+function payCard(v) {
+  var inv = v.invoice;
+  if (!inv) return "";
+
+  if (inv.status === "paid") {
+    return '<div class="ccard"><div class="lbl" style="margin-bottom:8px">Payment</div>' +
+      '<div class="cbox"><b>' + esc(inv.amount) + "</b> paid" +
+      (inv.paid_at ? " on " + esc(inv.paid_at) : "") + ". Thank you." +
+      '<br><span style="color:var(--faint)">Includes GST of ' + esc(inv.gst) + "</span></div></div>";
+  }
+
+  return '<div class="ccard"><div class="lbl" style="margin-bottom:8px">Payment</div>' +
+    '<div class="cnow"><div class="k">Amount due</div>' +
+    '<div class="v">' + esc(inv.amount) + "</div>" +
+    '<div class="s">Includes GST of ' + esc(inv.gst) + "</div></div>" +
+    (v.can_pay
+      ? '<button class="btn" data-pay="' + esc(v.id) + '" style="margin-top:12px">Pay now</button>' +
+        '<div style="font-size:11.5px;color:var(--faint);margin-top:8px">' +
+        "You will be taken to Stripe to pay by card, then brought back here.</div>"
+      : '<div class="cbox" style="margin-top:12px">Please contact the office to arrange payment.</div>') +
+    "</div>";
+}
+
 function tracker(v, here, done, byStage, loose) {
   return '<ol class="trk">' + S.stages.map(function (st, i) {
     var cls = i < here ? "done" : i === here ? (done ? "done" : "now") : "todo";
@@ -208,6 +248,8 @@ function draw() {
       (v.eta_ready ? '<div class="cbox"><b>Expected ready:</b> ' + esc(fmtDate(v.eta_ready)) + "</div>" : "") +
       "</div>" +
 
+      payCard(v) +
+
       '<div class="ccard"><div class="lbl" style="margin-bottom:12px">Every step</div>' +
       tracker(v, here, done, byStage, loose) + "</div>" +
 
@@ -240,6 +282,19 @@ function draw() {
     b.addEventListener("click", async function () {
       var r = await api("/api/client/doc", { id: b.getAttribute("data-doc") });
       if (r && r.url) window.open(r.url, "_blank"); else toast("That file is not available.");
+    });
+  });
+  document.querySelectorAll("[data-pay]").forEach(function (b) {
+    b.addEventListener("click", async function () {
+      // Disabled straight away: a second click while Stripe is being asked
+      // would open a second checkout for the same car.
+      b.disabled = true;
+      b.textContent = "Taking you to Stripe";
+      var r = await api("/api/client/checkout", { vehicle_id: b.getAttribute("data-pay") });
+      if (r && r.url) { location.href = r.url; return; }
+      b.disabled = false;
+      b.textContent = "Pay now";
+      toast((r && r.error) || "Could not start the payment.");
     });
   });
   document.querySelectorAll("[data-shot]").forEach(function (b) {

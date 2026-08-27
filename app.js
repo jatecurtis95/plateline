@@ -205,7 +205,7 @@ $("gate-form").addEventListener("submit", async function (ev) {
   try {
     r = await fetch(API + "/api/login", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ passcode: $("pc").value })
+      body: JSON.stringify({ username: $("un").value.trim().toLowerCase(), passcode: $("pc").value })
     });
   } catch (err) { e.textContent = "Cannot reach the server."; return; }
   var d = await r.json().catch(function () { return {}; });
@@ -246,6 +246,7 @@ function render() {
   });
   var unread = S.cars.reduce(function (n, c) { return n + c.unread; }, 0);
   $("pip-today").textContent = unread || "";
+  if ($("pip-money")) $("pip-money").textContent = unpaidCars().length || "";
 
   var m = $("main");
   if (r.view === "board") return viewBoard(m, r.id);
@@ -253,8 +254,115 @@ function render() {
   if (r.view === "clients") return viewClients(m);
   if (r.view === "client") return viewClient(m, r.id);
   if (r.view === "job") return viewJob(m, r.id);
+  if (r.view === "money") return viewMoney(m);
   if (r.view === "settings") return viewSettings(m);
   return viewToday(m);
+}
+
+/* ------------------------------------------------------------------ money */
+
+/* Every amount arrives from the API already formatted, because the money is
+   the API's to describe - and already GST-inclusive, because that is what an
+   Australian customer must be quoted. `gst` is the part of the total that is
+   GST, not something added to it. */
+
+function unpaidCars() {
+  return S.cars.filter(function (c) { return c.invoice && c.invoice.status === "unpaid"; });
+}
+
+function paidCars() {
+  return S.cars.filter(function (c) { return c.invoice && c.invoice.status === "paid"; });
+}
+
+/* The chip that shows next to a car wherever money matters. */
+function payChip(c) {
+  if (!c.invoice) return "";
+  if (c.invoice.status === "paid") return '<span class="chip done">Paid</span>';
+  return '<span class="chip warn">' + esc(c.invoice.amount) + " owing</span>";
+}
+
+function moneyRows(list, unpaid) {
+  if (!list.length) {
+    return '<div class="empty">' + (unpaid ? "Nothing owing." : "Nothing paid yet.") + "</div>";
+  }
+  return '<div class="rows">' + list.map(function (c) {
+    var cl = clientById(c.client_id) || {};
+    var st = stageOf(c.stage) || {};
+    var sub = esc(cl.name || "") + " &middot; " + esc(st.op_label || "");
+    var right = unpaid
+      ? '<span class="chip ' + (c.invoice.since >= 14 ? "bad" : "warn") + '">' +
+        esc(c.invoice.amount) + "</span>"
+      : '<span class="chip done">' + esc(c.invoice.amount) + "</span>";
+    var when = unpaid
+      ? (c.invoice.since === 0 ? "set today" : "set " + c.invoice.since + " days ago")
+      : (c.invoice.paid_at ? "paid " + c.invoice.paid_at : "paid") +
+        (c.invoice.by ? " &middot; " + esc(c.invoice.by) : "");
+    return '<a class="rw" href="#/job/' + c.id + '">' +
+      thumb(c, "sm round", esc(initials(cl.name))) +
+      '<span class="mid"><span class="nm">' + esc(c.description) + "</span>" +
+      '<span class="sub">' + sub + " &middot; " + when + "</span></span>" +
+      right + '<span class="go">&rsaquo;</span></a>';
+  }).join("") + "</div>";
+}
+
+/* Who has paid and who has not. The unpaid list leads, oldest first, because
+   that is the list somebody has to do something about. */
+function viewMoney(m) {
+  var unpaid = unpaidCars().slice().sort(function (a, b) { return b.invoice.since - a.invoice.since; });
+  var paid = paidCars();
+  var owing = unpaid.reduce(function (n, c) { return n + c.invoice.amount_cents; }, 0);
+  var taken = paid.reduce(function (n, c) { return n + c.invoice.amount_cents; }, 0);
+  var noAmount = S.cars.filter(function (c) { return !c.invoice && !isLast(c.stage); }).length;
+  var pay = S.payment || {};
+
+  m.innerHTML = head("Money") +
+    (pay.live ? "" : '<div class="note">Card payments are not switched on. Amounts can be set and marked ' +
+      "paid by hand, but no client can pay from their page until a Stripe account is added to the " +
+      "Supabase project settings.</div>") +
+    '<div class="cols2"><div class="stack">' +
+      '<div class="panel"><header><span class="lbl">Owing</span>' +
+      '<span class="chip ' + (unpaid.length ? "warn" : "done") + '">' + money(owing) + "</span></header>" +
+      moneyRows(unpaid, true) + "</div>" +
+      (noAmount ? '<div class="note">' + noAmount + (noAmount === 1 ? " car has" : " cars have") +
+        " no amount set yet.</div>" : "") +
+    "</div><div class=\"stack\">" +
+      '<div class="panel"><header><span class="lbl">Paid</span>' +
+      '<span class="chip done">' + money(taken) + "</span></header>" +
+      moneyRows(paid, false) + "</div>" +
+    "</div></div>";
+}
+
+/* Only used for the two totals above; everything else is formatted by the
+   API. Kept in cents until the last moment so the rounding happens once. */
+function money(cents) { return "$" + (Math.round(cents) / 100).toFixed(2); }
+
+/* The payment panel on one car. A paid invoice is shown, never edited: the
+   figure a customer has already been charged is a record, not a field. */
+function payPanel(c) {
+  var inv = c.invoice;
+  var pay = S.payment || {};
+  var paid = inv && inv.status === "paid";
+  var amount = inv ? (inv.amount_cents / 100).toFixed(2) : "";
+
+  return '<div class="panel"><header><span class="lbl">Payment</span>' +
+    (inv ? '<span class="chip ' + (paid ? "done" : "warn") + '">' +
+      esc(paid ? "Paid" : inv.amount + " owing") + "</span>" : "") + "</header>" +
+    '<div class="body stack">' +
+    (paid
+      ? '<div class="cbox"><b>' + esc(inv.amount) + "</b> paid" +
+        (inv.paid_at ? " on " + esc(inv.paid_at) : "") +
+        (inv.by ? ", marked by " + esc(inv.by) : "") +
+        '<br><span style="color:var(--faint)">Includes GST of ' + esc(inv.gst) + "</span></div>"
+      : '<label class="field"><span>Total the client pays, GST included</span><div class="row">' +
+        '<input id="j-amt" type="number" min="0" step="0.01" placeholder="0.00" value="' + esc(amount) + '" style="max-width:160px">' +
+        '<button class="btn" id="j-amtsave">Save</button>' +
+        (inv ? '<button class="btn quiet sm" id="j-paid">Mark paid</button>' +
+               '<button class="btn quiet sm" id="j-void">Clear</button>' : "") +
+        "</div></label>" +
+        (inv ? '<div style="font-size:11.5px;color:var(--faint)">Includes GST of ' + esc(inv.gst) +
+          ". " + (pay.live ? "The client can pay this from their page."
+                           : "Card payments are off, so this can only be marked paid by hand.") + "</div>" : "")) +
+    "</div></div>";
 }
 
 function head(title, backHref, crumb) {
@@ -429,6 +537,7 @@ function fillJobRows(m) {
       '<td class="opt"><span class="' + ageChip(c.days) + '">' + c.days + "d</span></td>" +
       '<td class="opt">' + (c.hold ? '<span class="chip warn">' + esc(c.hold) + "</span>" : "") + "</td>" +
       '<td class="opt mono sub-xs">' + esc(fmtDate(c.eta_ready)) + "</td>" +
+      "<td>" + payChip(c) + "</td>" +
       "<td>" + (c.unread ? '<span class="chip bad">' + c.unread + "</span>" : "") + "</td></tr>";
   }).join("");
 
@@ -454,7 +563,7 @@ function viewJobs(m) {
     '<div class="panel"><div class="tblwrap"><table class="tbl">' +
     "<thead><tr><th>Car</th><th>Client</th><th>Stage</th>" +
     '<th class="opt">Plate</th><th class="opt">Workshop</th><th class="opt">In stage</th>' +
-    '<th class="opt">Waiting on</th><th class="opt">Ready</th><th></th></tr></thead>' +
+    '<th class="opt">Waiting on</th><th class="opt">Ready</th><th>Payment</th><th></th></tr></thead>' +
     "<tbody></tbody></table></div></div>";
   fillJobRows(m);
 
@@ -521,6 +630,8 @@ function viewJob(m, id) {
         '<button class="btn danger sm" id="j-del">Remove car</button></div>' +
       "</div></div>" +
 
+      payPanel(c) +
+
       '<div class="panel"><header><span class="lbl">Documents</span>' +
       '<button class="btn ghost sm" id="j-upload">Upload</button></header>' +
       '<input type="file" id="j-file" hidden>' +
@@ -557,6 +668,20 @@ function viewJob(m, id) {
     if (!confirm("Remove " + c.description + " from the board?")) return;
     await api("/api/op/vehicle/delete", { id: c.id });
     toast("Removed"); go("#/jobs"); load(true);
+  });
+  if ($("j-amtsave")) $("j-amtsave").addEventListener("click", async function () {
+    var r = await api("/api/op/invoice/save", { vehicle_id: c.id, amount: $("j-amt").value });
+    toast(r && r.ok ? "Amount saved" : (r && r.error) || "Could not save that amount."); load(true);
+  });
+  if ($("j-paid")) $("j-paid").addEventListener("click", async function () {
+    if (!confirm("Mark " + c.invoice.amount + " as paid? Do this only if the money has arrived another way.")) return;
+    var r = await api("/api/op/invoice/paid", { id: c.invoice.id });
+    toast(r && r.ok ? "Marked paid" : (r && r.error) || "Could not mark that paid."); load(true);
+  });
+  if ($("j-void")) $("j-void").addEventListener("click", async function () {
+    if (!confirm("Clear the amount owing on this car?")) return;
+    var r = await api("/api/op/invoice/void", { id: c.invoice.id });
+    toast(r && r.ok ? "Cleared" : (r && r.error) || "Could not clear that."); load(true);
   });
   $("j-send").addEventListener("click", async function () {
     var t = $("j-msg").value.trim(); if (!t) return $("j-msg").focus();
@@ -917,8 +1042,14 @@ function viewSettings(m) {
 
   var staff = S.staff.map(function (p) {
     return '<div class="doc"><span class="nm">' + esc(p.name) +
-      (p.name === S.me.name ? ' <span class="chip">you</span>' : "") + "</span>" +
+      (p.name === S.me.name ? ' <span class="chip">you</span>' : "") +
+      '<br><span class="mono" style="font-size:10.5px;color:var(--faint)">' + esc(p.username || "no username yet") + "</span></span>" +
       '<button class="btn quiet sm" data-staffdel="' + p.id + '">Remove</button></div>';
+  }).join("");
+
+  var payStages = S.stages.map(function (s) {
+    return '<option value="' + s.id + '"' +
+      (s.id === ((S.payment || {}).stage_id || "") ? " selected" : "") + ">" + esc(s.op_label) + "</option>";
   }).join("");
 
   m.innerHTML = head("Settings") +
@@ -931,9 +1062,27 @@ function viewSettings(m) {
       '<div class="docs">' + staff + "</div>" +
       '<div class="body stack">' +
       '<div class="grid"><label class="field"><span>Name</span><input id="s-name"></label>' +
-      '<label class="field"><span>Passcode</span><input id="s-pass" type="text" placeholder="8+ characters"></label></div>' +
+      '<label class="field"><span>Username</span><input id="s-user" autocapitalize="none" spellcheck="false" placeholder="lowercase, no spaces"></label>' +
+      '<label class="field"><span>Password</span><input id="s-pass" type="text" placeholder="8+ characters"></label></div>' +
       '<div class="row"><button class="btn" id="s-add">Add person</button></div>' +
       '<div class="err" id="s-err"></div></div></div>' +
+
+      '<div class="panel"><header><span class="lbl">Taking payment</span>' +
+      '<span class="chip ' + ((S.payment || {}).live ? "done" : "warn") + '">' +
+      ((S.payment || {}).live ? "card payments on" : "not switched on") + "</span></header>" +
+      '<div class="body stack">' +
+      '<label class="field"><span>When a client can pay</span>' +
+      '<select id="p-mode" style="max-width:280px">' +
+      '<option value="amount"' + (((S.payment || {}).mode || "amount") === "amount" ? " selected" : "") +
+        ">As soon as an amount is set</option>" +
+      '<option value="stage"' + ((S.payment || {}).mode === "stage" ? " selected" : "") +
+        ">Once the car reaches a stage</option></select></label>" +
+      '<label class="field" id="p-stagewrap"><span>That stage</span>' +
+      '<select id="p-stage" style="max-width:280px">' + payStages + "</select></label>" +
+      '<div class="row"><button class="btn" id="p-save">Save</button>' +
+      '<span style="font-size:11.5px;color:var(--faint)">Amounts are GST inclusive. ' +
+      "The client sees the GST inside the total.</span></div>" +
+      "</div></div>" +
 
       '<div class="panel"><header><span class="lbl">Sent messages</span></header>' +
       (S.log.length ? '<div class="rows">' + S.log.slice(0, 12).map(function (l) {
@@ -970,10 +1119,28 @@ function viewSettings(m) {
   });
   $("s-add").addEventListener("click", async function () {
     $("s-err").textContent = "";
-    var r = await api("/api/op/staff/save", { name: $("s-name").value, passcode: $("s-pass").value });
+    var r = await api("/api/op/staff/save", {
+      name: $("s-name").value,
+      username: $("s-user").value.trim().toLowerCase(),
+      passcode: $("s-pass").value,
+    });
     if (!r || !r.ok) { $("s-err").textContent = (r && r.error) || "Could not add."; return; }
-    $("s-name").value = ""; $("s-pass").value = ""; toast("Added"); load(true);
+    $("s-name").value = ""; $("s-user").value = ""; $("s-pass").value = ""; toast("Added"); load(true);
   });
+  if ($("p-mode")) {
+    // The stage picker is only meaningful for one of the two modes.
+    var showStage = function () {
+      $("p-stagewrap").hidden = $("p-mode").value !== "stage";
+    };
+    showStage();
+    $("p-mode").addEventListener("change", showStage);
+    $("p-save").addEventListener("click", async function () {
+      var r = await api("/api/op/payment/settings", {
+        mode: $("p-mode").value, stage_id: $("p-stage").value,
+      });
+      toast(r && r.ok ? "Saved" : (r && r.error) || "Could not save"); load(true);
+    });
+  }
   m.querySelectorAll("[data-staffdel]").forEach(function (b) {
     b.addEventListener("click", async function () {
       if (!confirm("Remove this sign-in?")) return;

@@ -3,11 +3,12 @@
 The work standing between the board as it is today and a board that holds up at
 twenty-five cars a month, with what each piece costs to run.
 
-Item 4 is built. Items 6 and 7 — proper sign-in, and clients paying from the
-portal — are new asks specced but not started. Everything else is parked until
-Wasam wants to go live.
+Item zero is closed: the API is in the repo. Items 1 and 3 turned out to be
+done already, item 4 was built, and items 6 and 7 — username sign-in, and
+clients paying from the portal — are built and waiting to be deployed.
 
-**Six of the seven items are waiting on the same thing: item zero.**
+What is actually left: read one dashboard setting (2), build the stage-wording
+screen (5), and an Archive button.
 
 Written 26 August 2026, updated 27 August.
 
@@ -16,72 +17,45 @@ Written 26 August 2026, updated 27 August.
 5 clients, 5 live cars, 0 archived, 31 stage events, 7 messages, 0 documents.
 No photos have ever been uploaded, so nothing below has been felt yet.
 
-## Item zero: the API source is not version controlled
+## Item zero: the API source is not version controlled — CLOSED
 
-This repo is the front end only. `boardState`, the stage endpoints and the
-notification code live in the Supabase edge function `plateline`, and that
-source exists nowhere but inside the Supabase project. Four of the five items
-below are changes to it, and none of them can be started until it is reachable.
+The function now lives at `supabase/functions/plateline/index.ts`, committed
+unmodified and confirmed byte-for-byte against what was deployed. The whole
+system is under one history for the first time.
 
-One of:
+Reading it corrected two items on this list. **They were written against a
+description of an older version of the function, and were already done.** The
+lesson is in the plan, not just the code: an analysis of a system you cannot
+read is a guess, however confident the prose around it sounds.
 
-- Pull the function into this repo under `supabase/functions/plateline/` and
-  deploy from here. Best answer — it puts the whole system under one history.
-- Install the Supabase CLI and link the project, working against it directly.
-- Use a Supabase connection in the tooling that has write access.
+### 1. Filter the board query to live cars — ALREADY DONE
 
-Until then the only item that can be built is number 4.
+`boardState` scopes messages, stage events and documents to the cars actually
+on the board, through a `forCars()` helper that batches ids a hundred at a time
+because a few hundred UUIDs in one query string is more than PostgREST accepts.
+The comment in the source describes the exact problem this item was raised
+about, in the past tense. Nothing to do.
 
-## The work, in order
+### 2. Check the PostgREST row cap — LARGELY HANDLED, STILL WORTH A LOOK
 
-### 1. Filter the board query to live cars
+The function sets an explicit `HARD_CAP` of 5,000 on the queries that could
+grow, and the batching in item 1 keeps each request small. That removes the
+silent-truncation risk this item was about.
 
-`/api/op/state` runs three queries that pull whole tables and then filter in
-JavaScript:
+One thing a query cannot override is the project's own `max-rows` setting, so
+it is still worth reading once in the dashboard under Settings → API. Five
+minutes, and now a confirmation rather than a fix.
 
-    db.from("messages").select("*")
-    db.from("stage_events").select("*")
-    db.from("documents").select("*")
+### 3. Get finished cars off the board — ALREADY DONE
 
-Only `vehicles` is filtered on `archived = false`. Rows belonging to archived
-cars still ship — in every response, every thirty seconds, to every signed-in
-operator. At 25 cars a month that is roughly 3,000 stage events and 2,400
-messages in year one, all of it sent every time.
+`BOARD_KEEP_DAYS` is 60. Every call to `boardState` archives cars that have sat
+at the final stage longer than that. Nothing is deleted, the customer keeps
+their record, and moving a car back to any earlier stage brings it straight
+back onto the board.
 
-**Change:** add `.in("vehicle_id", liveIds)` to each of the three queries in
-`boardState`.
-**Where:** edge function.
-**Effort:** about half an hour once the source is reachable.
-
-This is first because it removes the payload growth and the risk in item 2 in
-a single change.
-
-### 2. Check the PostgREST row cap
-
-PostgREST caps how many rows a response may contain. The project's setting
-could not be read at database level; Supabase's common default is 1,000. If
-that is the value here, `stage_events` crosses it in roughly four months and
-the board simply starts missing history — no error, no warning, nothing in the
-interface to suggest anything is wrong.
-
-**Change:** read it in the Supabase dashboard under Settings → API → Max rows.
-**Effort:** five minutes, and worth doing before anything else on this list.
-
-### 3. Get finished cars off the board
-
-Nothing ever archives itself. `archived` is set only by the delete endpoints —
-the Remove button on a car ([app.js:556](app.js#L556)). A car that reaches
-"Passed - ready" stays on the board forever, so the board grows by 25 a month
-with no ceiling.
-
-Two ways:
-
-- An **Archive** button, separate from Remove. Remove reads as destructive,
-  which is why nobody will press it on a car that has merely finished.
-- **Auto-archive** after N days at the final stage.
-
-**Recommendation:** the button first — front end plus one endpoint — and
-auto-archive once there is a feel for how long a finished car should linger.
+Still not built: an **Archive** button for taking a finished car off early,
+rather than waiting sixty days. Small, and worth having, but no longer urgent —
+the board has a ceiling now.
 
 ### 4. Downscale photos before upload — BUILT
 
@@ -153,12 +127,14 @@ too, that is a code change, or a new API field the front end should prefer.
 These are new features rather than scale problems, so they sit apart from the
 list above. Both need the edge function, so both are behind item zero.
 
-### 6. Username and password, instead of a passcode alone
+### 6. Username and password, instead of a passcode alone — BUILT
 
-Sign-in today posts `{ passcode }` and nothing else ([app.js:208](app.js#L208)).
-There is no username field. The API works out who you are from *which* passcode
-matched, which is where the name on the token comes from and how the `who` on
-stage history gets filled in.
+Built, tested, and waiting on a deploy of the function and the migration.
+
+Sign-in used to post `{ passcode }` and nothing else. There was no username
+field. The API worked out who you were from *which* passcode matched, which is
+where the name on the token came from and how the `who` on stage history got
+filled in.
 
 The sharp edge: **passcodes have to be unique across the whole team.** Two
 people who pick the same one are the same person as far as the board is
@@ -191,11 +167,14 @@ passcode — so nobody is forced out mid-job by the change itself.
   source — a passcode-only door with unlimited attempts is guessable in a way a
   username-and-password door is not.
 
-### 7. Clients pay from the portal
+### 7. Clients pay from the portal — BUILT
 
-**Decided:** Stripe hosted Checkout; the amount is set by the operator per car;
-whether the client can pay is controlled by a setting, either as soon as an
-amount is on the car or once the car reaches a nominated stage.
+Built, tested, and waiting on a deploy plus a Stripe account.
+
+**Decided and implemented:** Stripe hosted Checkout; the amount is set by the
+operator per car; whether the client can pay is controlled by a setting, either
+as soon as an amount is on the car or once the car reaches a nominated stage.
+GST shows, as the portion inside the total rather than an amount added to it.
 
 Hosted Checkout matters for a reason beyond convenience: card details never
 touch Plateline or Supabase, which keeps the PCI burden near zero. Do not
@@ -274,9 +253,11 @@ headroom rather than an immediate saving.
 3. **The wording of the ten stages.** Not needed to *build* item 5 — the screen
    can be built without knowing the words. Needed before Wasam gets any value
    from it.
-4. **Whether GST shows on what the client sees.** Needed to finish item 7.
-5. **Usernames for the people who already have passcodes.** Needed to migrate
-   item 6 without locking anyone out.
+4. ~~**Whether GST shows on what the client sees.**~~ Settled: it shows, as the
+   portion inside the total.
+5. ~~**Usernames for the people who already have passcodes.**~~ Settled: the
+   migration derives one from each person's first name, and Settings shows
+   everyone theirs. Tell them what it is before the function is deployed.
 
 Settled on 27 August 2026: Stripe hosted Checkout, the amount set per car by the
 operator, and payment visibility as a setting — either as soon as an amount is

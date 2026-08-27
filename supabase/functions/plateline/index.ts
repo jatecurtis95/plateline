@@ -58,6 +58,21 @@ const BOARD_KEEP_DAYS = 60;
 // rather than quietly returning a short list in production.
 const HARD_CAP = 5000;
 
+// Passwords. SHA-256 is built to be fast, which is exactly what a password
+// hash must not be, so a sign-in against the old column rewrites it as PBKDF2
+// and clears the old one. Nobody is asked to change anything.
+const PBKDF2_ITERATIONS = 210000;
+// Generous, and it fails open below: locking the office out of its own board
+// is a worse outcome than letting a guesser have a few more tries.
+const LOGIN_WINDOW_MINUTES = 15;
+const LOGIN_MAX_FAILURES = 10;
+
+// Money. amount_cents is GST-inclusive, so the GST inside a total is a
+// division rather than a multiplication: at 10%, total / 11.
+const GST_DIVISOR = 11;
+// Stripe replays are rejected past this age, in seconds.
+const STRIPE_TOLERANCE = 300;
+
 const str = (v: unknown, max = 400) => String(v ?? "").trim().slice(0, max);
 const nullable = (v: unknown, max = 400) => str(v, max) || null;
 
@@ -132,6 +147,135 @@ const dayMonth = (iso: string) =>
 
 const stamp = (iso: string) =>
   new Date(iso).toLocaleString("en-AU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Australia/Perth" });
+
+/* ------------------------------------------------------------- passwords */
+
+// Compares in time that does not depend on where the first difference is.
+// A plain === leaks the length of the matching prefix to anyone timing it.
+function sameSecret(a: string, b: string) {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+
+async function pbkdf2Hex(pass: string, saltB64: string, iterations: number) {
+  const salt = Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("raw", te.encode(pass), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" }, key, 256,
+  );
+  return hex(bits);
+}
+
+async function hashPasscode(pass: string) {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const saltB64 = btoa(String.fromCharCode(...salt));
+  return "pbkdf2$" + PBKDF2_ITERATIONS + "$" + saltB64 + "$" +
+    (await pbkdf2Hex(pass, saltB64, PBKDF2_ITERATIONS));
+}
+
+// Sixteen zero bytes. Only ever used to spend the same time on a username
+// that does not exist as on one that does.
+const DUMMY_SALT = "AAAAAAAAAAAAAAAAAAAAAA==";
+
+// True if this passcode matches, by whichever scheme the row is stored in.
+async function passcodeMatches(row: any, given: string) {
+  if (row?.passcode_hash) {
+    const [scheme, iter, salt, want] = String(row.passcode_hash).split("$");
+    if (scheme !== "pbkdf2" || !salt || !want) return false;
+    return sameSecret(await pbkdf2Hex(given, salt, Number(iter) || PBKDF2_ITERATIONS), want);
+  }
+  if (row?.passcode_sha256) return sameSecret(await sha256hex(given), String(row.passcode_sha256));
+  // No such username, or a row carrying no password at all. Returning here
+  // immediately would make an unknown username measurably faster than a known
+  // one, which is a list of who works here. Do the work and throw it away.
+  await pbkdf2Hex(given, DUMMY_SALT, PBKDF2_ITERATIONS);
+  return false;
+}
+
+// Throttling. Every one of these swallows its error on purpose: if the
+// attempts table is unreachable, sign-in carries on unthrottled rather than
+// failing shut and taking the board down with it.
+async function tooManyAttempts(key: string) {
+  try {
+    const since = new Date(Date.now() - LOGIN_WINDOW_MINUTES * 60000).toISOString();
+    const { count } = await db.from("login_attempts")
+      .select("id", { count: "exact", head: true }).eq("key", key).gte("at", since);
+    return (count ?? 0) >= LOGIN_MAX_FAILURES;
+  } catch {
+    return false;
+  }
+}
+
+async function noteFailure(key: string) {
+  try { await db.from("login_attempts").insert({ key }); } catch { /* not worth failing a login over */ }
+}
+
+async function clearFailures(key: string) {
+  try { await db.from("login_attempts").delete().eq("key", key); } catch { /* as above */ }
+}
+
+// The unique index does the enforcing; this only turns its message into one
+// the person adding a colleague can act on.
+const usernameTaken = (e: { message?: string }) =>
+  /staff_username_key|duplicate key/i.test(e?.message ?? "")
+    ? "Somebody already has that username."
+    : (e?.message ?? "Could not save that sign-in.");
+
+/* ------------------------------------------------------------------ money */
+
+const money = (cents: number) => "$" + (Math.round(cents) / 100).toFixed(2);
+
+// Dollars in, cents out. Anything that is not a positive number is zero, and
+// the caller decides what to say about it.
+function centsFrom(v: unknown) {
+  const n = Math.round(Number(v) * 100);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+const gstWithin = (cents: number) => Math.round(cents / GST_DIVISOR);
+
+// Whether the client is allowed to see an amount for this car yet. Either as
+// soon as one is set, or not until the car reaches a nominated stage.
+async function paymentVisible(vehicleStageId: string, stages: any[]) {
+  const s = await settings();
+  if ((s.payment_visible_mode ?? "amount") !== "stage") return true;
+  const gate = stages.findIndex((x) => x.id === (s.payment_visible_stage ?? ""));
+  if (gate < 0) return true;
+  const at = stages.findIndex((x) => x.id === vehicleStageId);
+  return at < 0 ? false : at >= gate;
+}
+
+const forClient = (inv: any) => inv && {
+  id: inv.id,
+  amount_cents: inv.amount_cents,
+  gst_cents: inv.gst_cents,
+  amount: money(inv.amount_cents),
+  gst: money(inv.gst_cents),
+  status: inv.status,
+  paid_at: inv.paid_at ? dayMonth(inv.paid_at) : "",
+};
+
+/* ----------------------------------------------------------------- stripe */
+
+// Stripe signs the exact bytes it sent. Anything that re-serialises the body
+// before this runs will not verify.
+async function stripeSigned(raw: string, header: string, secret: string) {
+  const parts: Record<string, string> = {};
+  for (const bit of header.split(",")) {
+    const i = bit.indexOf("=");
+    if (i > 0) parts[bit.slice(0, i).trim()] = bit.slice(i + 1).trim();
+  }
+  const t = Number(parts.t);
+  if (!t || Math.abs(Date.now() / 1000 - t) > STRIPE_TOLERANCE) return false;
+  const key = await crypto.subtle.importKey(
+    "raw", te.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const want = hex(await crypto.subtle.sign("HMAC", key, te.encode(t + "." + raw)));
+  return sameSecret(want, String(parts.v1 ?? ""));
+}
 
 /* ----------------------------------------------------------- notifications */
 
@@ -274,14 +418,15 @@ async function boardState(me: { name: string }) {
   // stage change ever recorded - including those belonging to archived cars -
   // travelled in every poll, and would silently hit PostgREST's row cap once
   // the tables grew.
-  const [cres, msgs, tres, lres, evs, docs, stres] = await Promise.all([
+  const [cres, msgs, tres, lres, evs, docs, stres, invs] = await Promise.all([
     db.from("clients").select("*").order("name").limit(HARD_CAP),
     forCars("messages", ids, "created_at", true),
     db.from("notification_templates").select("*"),
     db.from("notification_log").select("*").order("created_at", { ascending: false }).limit(60),
     forCars("stage_events", ids, "occurred_at", true),
     forCars("documents", ids, "created_at", false),
-    db.from("staff").select("id,name,active,last_seen_at").order("name"),
+    db.from("staff").select("id,name,username,active,last_seen_at").order("name"),
+    forCars("invoices", ids, "created_at", false),
   ]);
 
   const stageById: Record<string, any> = {};
@@ -293,6 +438,13 @@ async function boardState(me: { name: string }) {
   for (const e of evs) (evByV[e.vehicle_id] ??= []).push(e);
   const docByV: Record<string, any[]> = {};
   for (const d of docs) (docByV[d.vehicle_id] ??= []).push(d);
+  // Newest first, so the first non-void row is the one that counts. Voided
+  // invoices stay in the table as the record and are skipped here.
+  const invByV: Record<string, any> = {};
+  for (const i of invs) {
+    if (i.status === "void") continue;
+    if (!invByV[i.vehicle_id]) invByV[i.vehicle_id] = i;
+  }
 
   const cars = vehicles.map((v) => {
     const mine = msgByV[v.id] ?? [];
@@ -322,8 +474,13 @@ async function boardState(me: { name: string }) {
       })),
       messages: mine.map((m) => ({ from: m.sender, body: m.body, at: stamp(m.created_at) })),
       unread: mine.filter((m) => m.sender === "client" && !m.read_by_office).length,
+      invoice: invByV[v.id]
+        ? { ...forClient(invByV[v.id]), by: invByV[v.id].paid_by ?? "", since: daysSince(invByV[v.id].created_at) }
+        : null,
     };
   });
+
+  const s = await settings();
 
   return {
     me,
@@ -333,6 +490,13 @@ async function boardState(me: { name: string }) {
     templates: tres.data ?? [],
     log: lres.data ?? [],
     staff: stres.data ?? [],
+    payment: {
+      mode: s.payment_visible_mode ?? "amount",
+      stage_id: s.payment_visible_stage ?? "",
+      // The board says so plainly rather than letting somebody set an amount
+      // and wonder why no client can pay it.
+      live: !!Deno.env.get("STRIPE_SECRET_KEY"),
+    },
   };
 }
 
@@ -342,6 +506,38 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
   const path = routeOf(req);
+
+  // Before the shared JSON parse, because Stripe signs the exact bytes it
+  // sent and reading the body any other way loses them. This route carries no
+  // bearer token: the signature is the authentication.
+  if (path === "/api/stripe/webhook" && req.method === "POST") {
+    try {
+      const secret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
+      if (!secret) return json({ error: "not configured" }, 400);
+      const raw = await req.text();
+      if (!(await stripeSigned(raw, req.headers.get("stripe-signature") ?? "", secret))) {
+        return json({ error: "bad signature" }, 400);
+      }
+      const ev = JSON.parse(raw || "{}");
+      if (ev.type === "checkout.session.completed" || ev.type === "checkout.session.async_payment_succeeded") {
+        const sess = ev.data?.object ?? {};
+        const invoiceId = str(sess.metadata?.invoice_id ?? sess.client_reference_id ?? "", 80);
+        if (invoiceId) {
+          // Scoped to unpaid, so a replayed event cannot move paid_at.
+          await db.from("invoices").update({
+            status: "paid",
+            paid_at: new Date().toISOString(),
+            paid_by: "Stripe",
+            stripe_payment_intent: str(sess.payment_intent ?? "", 120) || null,
+          }).eq("id", invoiceId).eq("status", "unpaid");
+        }
+      }
+      return json({ received: true });
+    } catch (e) {
+      return json({ error: String(e) }, 500);
+    }
+  }
+
   const body: any = req.method === "POST" ? await req.json().catch(() => ({})) : {};
 
   try {
@@ -351,12 +547,42 @@ Deno.serve(async (req) => {
 
     /* ------------------------------------------------------------- sign in */
 
+    // Username and password, not a passcode on its own. A passcode alone had
+    // to be unique across everyone, because it was the only thing identifying
+    // who was signing in: two people who chose the same one became the same
+    // person, and the stage history named whichever of them the scan reached
+    // first.
     if (path === "/api/login" && req.method === "POST") {
-      const given = await sha256hex(String(body.passcode ?? ""));
-      const { data: people } = await db.from("staff")
-        .select("id,name,passcode_sha256,active").eq("active", true);
-      const who = (people ?? []).find((p) => p.passcode_sha256 === given);
-      if (!who) return json({ error: "That passcode is not right." }, 401);
+      const username = str(body.username, 60).toLowerCase();
+      const passcode = String(body.passcode ?? "");
+      if (!username || !passcode) return json({ error: "Enter your username and password." }, 400);
+
+      if (await tooManyAttempts(username)) {
+        return json({ error: "Too many attempts. Wait fifteen minutes and try again." }, 429);
+      }
+
+      const { data: who } = await db.from("staff")
+        .select("id,name,username,passcode_sha256,passcode_hash,active")
+        .eq("username", username).eq("active", true).maybeSingle();
+
+      // Both halves are checked even when the username is unknown, so a wrong
+      // username and a wrong password take the same time and say the same
+      // thing. Which half was wrong is not the caller's business.
+      const ok = await passcodeMatches(who, passcode);
+      if (!who || !ok) {
+        await noteFailure(username);
+        return json({ error: "That username and password do not match." }, 401);
+      }
+
+      // A sign-in against the old hash is the one moment the plain passcode is
+      // in hand, so it is the moment to store it properly.
+      if (!who.passcode_hash) {
+        await db.from("staff")
+          .update({ passcode_hash: await hashPasscode(passcode), passcode_sha256: null })
+          .eq("id", who.id);
+      }
+
+      await clearFailures(username);
       await rememberOrigin(req);
       return json({ token: await mint("op." + who.id), name: who.name });
     }
@@ -382,18 +608,28 @@ Deno.serve(async (req) => {
         const stageById: Record<string, any> = {};
         for (const s of stages ?? []) stageById[s.id] = s;
 
+        const canPay = !!Deno.env.get("STRIPE_SECRET_KEY");
+
         const vehicles = [];
         for (const v of vs ?? []) {
-          const [{ data: evs }, { data: ms }, { data: docs }] = await Promise.all([
+          const [{ data: evs }, { data: ms }, { data: docs }, { data: inv }] = await Promise.all([
             db.from("stage_events").select("*").eq("vehicle_id", v.id).order("occurred_at"),
             db.from("messages").select("*").eq("vehicle_id", v.id).order("created_at"),
             db.from("documents").select("id,name,created_at,content_type,stage_id")
               .eq("vehicle_id", v.id).eq("client_visible", true).order("created_at", { ascending: false }),
+            db.from("invoices").select("*").eq("vehicle_id", v.id)
+              .neq("status", "void").order("created_at", { ascending: false }).limit(1).maybeSingle(),
           ]);
+          // An amount the client is not meant to see yet is left out of the
+          // payload entirely, not hidden by the markup. Paid ones always show,
+          // so a receipt does not disappear when the car moves on.
+          const showable = inv && (inv.status === "paid" || await paymentVisible(v.stage_id, stages ?? []));
           vehicles.push({
             id: v.id, chassis: v.chassis, description: v.description,
             plate_no: v.plate_no ?? "", eta_ready: v.eta_ready ?? "",
             stage: v.stage_id, days: daysSince(v.stage_since), hold: v.hold_reason ?? "",
+            invoice: showable ? forClient(inv) : null,
+            can_pay: canPay,
             history: (evs ?? []).map((e) => ({
               when: dayMonth(e.occurred_at),
               what: stageById[e.stage_id]?.client_label ?? e.stage_id,
@@ -429,6 +665,55 @@ Deno.serve(async (req) => {
           notify_email: !!body.notify_email,
         }).eq("id", cid);
         return json({ ok: true });
+      }
+
+      // Hands back a Stripe Checkout URL for one car. Everything that decides
+      // the price is read here, from the invoice row: an amount posted by the
+      // browser is an amount the customer can edit.
+      if (path === "/api/client/checkout" && req.method === "POST") {
+        const key = Deno.env.get("STRIPE_SECRET_KEY");
+        if (!key) return json({ error: "Card payments are not switched on yet." }, 400);
+
+        const { data: v } = await db.from("vehicles")
+          .select("id,description,stage_id").eq("id", str(body.vehicle_id, 80))
+          .eq("client_id", cid).eq("removed", false).maybeSingle();
+        if (!v) return json({ error: "no such car" }, 404);
+
+        const { data: stages } = await db.from("stages").select("id,ord").order("ord");
+        if (!(await paymentVisible(v.stage_id, stages ?? []))) {
+          return json({ error: "That is not due yet." }, 400);
+        }
+
+        const { data: inv } = await db.from("invoices").select("*")
+          .eq("vehicle_id", v.id).eq("status", "unpaid").limit(1).maybeSingle();
+        if (!inv) return json({ error: "There is nothing to pay on that car." }, 400);
+
+        const s = await settings();
+        const base = (s.site_url ?? "").replace(/\/+$/, "");
+        const form = new URLSearchParams({
+          mode: "payment",
+          success_url: base + "/my.html?paid=1",
+          cancel_url: base + "/my.html",
+          client_reference_id: inv.id,
+          "metadata[invoice_id]": inv.id,
+          "line_items[0][quantity]": "1",
+          "line_items[0][price_data][currency]": inv.currency ?? "aud",
+          "line_items[0][price_data][unit_amount]": String(inv.amount_cents),
+          "line_items[0][price_data][product_data][name]": "Compliance - " + v.description,
+          "line_items[0][price_data][product_data][description]":
+            "Includes GST of " + money(inv.gst_cents),
+        });
+
+        const r = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+          method: "POST",
+          headers: { authorization: "Bearer " + key, "content-type": "application/x-www-form-urlencoded" },
+          body: form,
+        });
+        const out = await r.json().catch(() => ({}));
+        if (!r.ok || !out.url) return json({ error: "Could not start the payment." }, 400);
+
+        await db.from("invoices").update({ stripe_session_id: out.id }).eq("id", inv.id);
+        return json({ url: out.url });
       }
 
       if (path === "/api/client/doc" && req.method === "POST") {
@@ -669,6 +954,63 @@ Deno.serve(async (req) => {
         return json({ ok: true });
       }
 
+      /* --- money -------------------------------------------------------- */
+
+      // Sets what a car costs. The figure typed is the total the customer
+      // pays, GST included, which is what they must be quoted; the GST inside
+      // it is worked out here rather than added on.
+      if (path === "/api/op/invoice/save" && req.method === "POST") {
+        const vid = str(body.vehicle_id, 80);
+        const cents = centsFrom(body.amount);
+        if (!cents) return json({ error: "Enter an amount." }, 400);
+
+        // limit(1) throughout: a car can collect more than one paid invoice
+        // over its life, and maybeSingle() treats a second row as an error.
+        const { data: settled } = await db.from("invoices").select("id")
+          .eq("vehicle_id", vid).eq("status", "paid").limit(1).maybeSingle();
+        if (settled) return json({ error: "That car is already paid." }, 400);
+
+        const fields = { amount_cents: cents, gst_cents: gstWithin(cents), created_by: me.name };
+        const { data: open } = await db.from("invoices").select("id")
+          .eq("vehicle_id", vid).eq("status", "unpaid").limit(1).maybeSingle();
+
+        if (open) {
+          const { error } = await db.from("invoices").update(fields).eq("id", open.id);
+          if (error) return json({ error: error.message }, 400);
+          return json({ ok: true, id: open.id });
+        }
+        const { data, error } = await db.from("invoices")
+          .insert({ ...fields, vehicle_id: vid }).select().single();
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true, id: data.id });
+      }
+
+      // Paid some other way - a transfer, cash at the counter. Recorded as
+      // who marked it rather than pretending Stripe saw it.
+      if (path === "/api/op/invoice/paid" && req.method === "POST") {
+        const { error } = await db.from("invoices").update({
+          status: "paid", paid_at: new Date().toISOString(), paid_by: me.name,
+        }).eq("id", str(body.id, 80)).eq("status", "unpaid");
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true });
+      }
+
+      if (path === "/api/op/invoice/void" && req.method === "POST") {
+        const { error } = await db.from("invoices").update({ status: "void" })
+          .eq("id", str(body.id, 80)).eq("status", "unpaid");
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true });
+      }
+
+      // When the amount appears on the client's page: as soon as one is set,
+      // or not until the car reaches a nominated stage.
+      if (path === "/api/op/payment/settings" && req.method === "POST") {
+        const mode = str(body.mode, 10) === "stage" ? "stage" : "amount";
+        await putSetting("payment_visible_mode", mode);
+        await putSetting("payment_visible_stage", str(body.stage_id, 40));
+        return json({ ok: true });
+      }
+
       /* --- the wording -------------------------------------------------- */
 
       // "Written once and sent for every car" was only true if somebody could
@@ -708,16 +1050,31 @@ Deno.serve(async (req) => {
         const name = str(body.name, 60);
         if (!name) return json({ error: "A name is needed." }, 400);
         const pass = String(body.passcode ?? "");
+        // Stored lowercase so the sign-in lookup can be a plain equality
+        // rather than a pattern match, where _ and % would be wildcards.
+        const username = str(body.username, 60).toLowerCase();
+        if (username && !/^[a-z0-9._-]{3,60}$/.test(username)) {
+          return json({ error: "Usernames use letters, numbers, dots, dashes and underscores, 3 characters or more." }, 400);
+        }
+
         if (body.id) {
           const patch: any = { name, active: body.active !== false };
-          if (pass) patch.passcode_sha256 = await sha256hex(pass);
+          if (username) patch.username = username;
+          if (pass) {
+            if (pass.length < 8) return json({ error: "A password needs at least 8 characters." }, 400);
+            patch.passcode_hash = await hashPasscode(pass);
+            patch.passcode_sha256 = null;
+          }
           const { error } = await db.from("staff").update(patch).eq("id", str(body.id, 80));
-          if (error) return json({ error: error.message }, 400);
+          if (error) return json({ error: usernameTaken(error) }, 400);
           return json({ ok: true });
         }
-        if (pass.length < 8) return json({ error: "Give them a passcode of at least 8 characters." }, 400);
-        const { error } = await db.from("staff").insert({ name, passcode_sha256: await sha256hex(pass) });
-        if (error) return json({ error: error.message }, 400);
+
+        if (!username) return json({ error: "Give them a username." }, 400);
+        if (pass.length < 8) return json({ error: "Give them a password of at least 8 characters." }, 400);
+        const { error } = await db.from("staff")
+          .insert({ name, username, passcode_hash: await hashPasscode(pass) });
+        if (error) return json({ error: usernameTaken(error) }, 400);
         return json({ ok: true });
       }
 
