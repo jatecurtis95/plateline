@@ -255,7 +255,7 @@ function render() {
   if (r.view === "client") return viewClient(m, r.id);
   if (r.view === "job") return viewJob(m, r.id);
   if (r.view === "money") return viewMoney(m);
-  if (r.view === "settings") return viewSettings(m);
+  if (r.view === "settings") return viewSettings(m, r.id);
   return viewToday(m);
 }
 
@@ -1022,83 +1022,157 @@ function viewClient(m, id) {
 
 /* -------------------------------------------------------------- settings */
 
-function viewSettings(m) {
+/* Settings is four unrelated jobs, not one page: who works here, how money is
+   taken, what the client is told, and what has happened. They used to sit in
+   two columns of stacked panels - ten expanded message templates down one side
+   and everything else jammed down the other - which read as one long jumble
+   with no way to find anything.
+
+   Each is now its own tab at its own address, so #/settings/payment is a place
+   somebody can be sent to. */
+var SETTINGS_TABS = [
+  { id: "people", label: "People" },
+  { id: "payment", label: "Payment" },
+  { id: "messages", label: "Client messages" },
+  { id: "activity", label: "Activity" },
+];
+
+function settingsTabs(now) {
+  return '<div class="subtabs">' + SETTINGS_TABS.map(function (t) {
+    return '<a href="#/settings/' + t.id + '"' + (t.id === now ? ' class="on"' : "") +
+      ">" + esc(t.label) + "</a>";
+  }).join("") + "</div>";
+}
+
+function settingsPeople() {
+  var staff = S.staff.map(function (p) {
+    return '<div class="doc"><span class="nm">' + esc(p.name) +
+      (p.name === S.me.name ? ' <span class="chip">you</span>' : "") +
+      '<br><span class="mono" style="font-size:10.5px;color:var(--faint)">' +
+      esc(p.username || "no username yet") + "</span></span>" +
+      '<button class="btn quiet sm" data-staffdel="' + p.id + '">Remove</button></div>';
+  }).join("");
+
+  return '<p class="sect">Everyone who works on the board signs in as themselves. ' +
+    "Stage changes and uploads are recorded against whoever made them, so give each " +
+    "person their own sign-in rather than sharing one.</p>" +
+    '<div class="panel"><header><span class="lbl">Who can sign in</span>' +
+    '<span class="chip">' + S.staff.length + (S.staff.length === 1 ? " person" : " people") + "</span></header>" +
+    '<div class="docs">' + staff + "</div></div>" +
+
+    '<div class="panel"><header><span class="lbl">Add someone</span></header>' +
+    '<div class="body stack">' +
+    '<div class="grid"><label class="field"><span>Name</span><input id="s-name"></label>' +
+    '<label class="field"><span>Username</span><input id="s-user" autocapitalize="none" spellcheck="false" placeholder="lowercase, no spaces"></label>' +
+    '<label class="field"><span>Password</span><input id="s-pass" type="text" placeholder="8+ characters"></label></div>' +
+    '<div class="row"><button class="btn" id="s-add">Add person</button>' +
+    '<span style="font-size:11.5px;color:var(--faint)">They can sign in straight away. ' +
+    "Tell them the username as well as the password.</span></div>" +
+    '<div class="err" id="s-err"></div></div></div>';
+}
+
+function settingsPayment() {
+  var pay = S.payment || {};
+  var payStages = S.stages.map(function (s) {
+    return '<option value="' + s.id + '"' +
+      (s.id === (pay.stage_id || "") ? " selected" : "") + ">" + esc(s.op_label) + "</option>";
+  }).join("");
+
+  return '<p class="sect">Amounts are set on each car, not here. What is set here is ' +
+    "when a client is allowed to see the amount and pay it.</p>" +
+    (pay.live ? "" : '<div class="note">Card payments are not switched on. Amounts can still be ' +
+      "set and marked paid by hand, but no client can pay from their page until a Stripe " +
+      "account is added to the Supabase project settings.</div>") +
+    '<div class="panel"><header><span class="lbl">Taking payment</span>' +
+    '<span class="chip ' + (pay.live ? "done" : "warn") + '">' +
+    (pay.live ? "card payments on" : "not switched on") + "</span></header>" +
+    '<div class="body stack">' +
+    '<label class="field"><span>When a client can pay</span>' +
+    '<select id="p-mode" style="max-width:300px">' +
+    '<option value="amount"' + ((pay.mode || "amount") === "amount" ? " selected" : "") +
+      ">As soon as an amount is set</option>" +
+    '<option value="stage"' + (pay.mode === "stage" ? " selected" : "") +
+      ">Once the car reaches a stage</option></select></label>" +
+    '<label class="field" id="p-stagewrap"><span>That stage</span>' +
+    '<select id="p-stage" style="max-width:300px">' + payStages + "</select></label>" +
+    '<div class="row"><button class="btn" id="p-save">Save</button></div>' +
+    '<p class="sect" style="margin:0">Amounts are GST inclusive, because that is what a ' +
+    "customer must be quoted. The client sees the total and the GST inside it.</p>" +
+    "</div></div>";
+}
+
+/* Which stage is open. Held outside the render because every save, every
+   toggle and the thirty-second poll rebuild this page - and a panel that shuts
+   itself while somebody is working in it is worse than no panel at all. */
+var openTemplate = "";
+
+function settingsMessages() {
   var anyHeld = S.log.some(function (l) { return l.status === "held"; });
 
   var tpl = S.stages.map(function (st) {
     var t = S.templates.filter(function (x) { return x.stage_id === st.id; })[0];
     if (!t) return "";
-    return '<div class="panel"><header><span class="lbl">' + esc(st.client_label) + "</span>" +
-      '<label class="toggle"><input type="checkbox" data-tog="' + st.id + '"' + (t.enabled ? " checked" : "") +
-      '><span class="track"></span><span>' + (t.enabled ? "on" : "off") + "</span></label></header>" +
+    // Closed by default. The toggle lives inside rather than in the summary,
+    // so clicking it cannot also open or shut the panel underneath it.
+    return '<details class="panel" data-stage="' + esc(st.id) + '"' +
+      (openTemplate === st.id ? " open" : "") + "><summary>" + esc(st.client_label) +
+      '<span class="chip ' + (t.enabled ? "done" : "") + '" style="margin-left:auto">' +
+      (t.enabled ? "on" : "off") + "</span></summary>" +
       '<div class="body stack">' +
+      '<label class="toggle"><input type="checkbox" data-tog="' + st.id + '"' + (t.enabled ? " checked" : "") +
+      '><span class="track"></span><span>Tell the client when a car reaches this stage</span></label>' +
       '<label class="field"><span>Text message</span><textarea rows="2" data-sms="' + st.id + '">' + esc(t.sms_body) + "</textarea></label>" +
       '<label class="field"><span>Email subject</span><input data-subj="' + st.id + '" value="' + esc(t.email_subject) + '"></label>' +
       '<label class="field"><span>Email</span><textarea rows="3" data-mail="' + st.id + '">' + esc(t.email_body) + "</textarea></label>" +
       '<div class="row"><button class="btn sm" data-tsave="' + st.id + '">Save</button>' +
       '<span style="font-size:11.5px;color:var(--faint)">{name} {car} {link} are filled in when it sends</span></div>' +
-      "</div></div>";
+      "</div></details>";
   }).join("");
 
-  var staff = S.staff.map(function (p) {
-    return '<div class="doc"><span class="nm">' + esc(p.name) +
-      (p.name === S.me.name ? ' <span class="chip">you</span>' : "") +
-      '<br><span class="mono" style="font-size:10.5px;color:var(--faint)">' + esc(p.username || "no username yet") + "</span></span>" +
-      '<button class="btn quiet sm" data-staffdel="' + p.id + '">Remove</button></div>';
-  }).join("");
-
-  var payStages = S.stages.map(function (s) {
-    return '<option value="' + s.id + '"' +
-      (s.id === ((S.payment || {}).stage_id || "") ? " selected" : "") + ">" + esc(s.op_label) + "</option>";
-  }).join("");
-
-  m.innerHTML = head("Settings") +
+  return '<p class="sect">One message per stage, sent automatically when a car gets there. ' +
+    "Open a stage to change what it says or to stop it sending.</p>" +
     (anyHeld ? '<div class="note">Texts and emails are being written down but not sent. ' +
       "Add a Resend or Twilio account in the Supabase project settings to turn sending on.</div>" : "") +
-    '<div class="cols2"><div class="stack">' +
-      '<h2 style="font-size:15px;margin-bottom:2px">Client updates</h2>' + tpl +
-    "</div><div class=\"stack\">" +
-      '<div class="panel"><header><span class="lbl">Who can sign in</span></header>' +
-      '<div class="docs">' + staff + "</div>" +
-      '<div class="body stack">' +
-      '<div class="grid"><label class="field"><span>Name</span><input id="s-name"></label>' +
-      '<label class="field"><span>Username</span><input id="s-user" autocapitalize="none" spellcheck="false" placeholder="lowercase, no spaces"></label>' +
-      '<label class="field"><span>Password</span><input id="s-pass" type="text" placeholder="8+ characters"></label></div>' +
-      '<div class="row"><button class="btn" id="s-add">Add person</button></div>' +
-      '<div class="err" id="s-err"></div></div></div>' +
+    tpl;
+}
 
-      '<div class="panel"><header><span class="lbl">Taking payment</span>' +
-      '<span class="chip ' + ((S.payment || {}).live ? "done" : "warn") + '">' +
-      ((S.payment || {}).live ? "card payments on" : "not switched on") + "</span></header>" +
-      '<div class="body stack">' +
-      '<label class="field"><span>When a client can pay</span>' +
-      '<select id="p-mode" style="max-width:280px">' +
-      '<option value="amount"' + (((S.payment || {}).mode || "amount") === "amount" ? " selected" : "") +
-        ">As soon as an amount is set</option>" +
-      '<option value="stage"' + ((S.payment || {}).mode === "stage" ? " selected" : "") +
-        ">Once the car reaches a stage</option></select></label>" +
-      '<label class="field" id="p-stagewrap"><span>That stage</span>' +
-      '<select id="p-stage" style="max-width:280px">' + payStages + "</select></label>" +
-      '<div class="row"><button class="btn" id="p-save">Save</button>' +
-      '<span style="font-size:11.5px;color:var(--faint)">Amounts are GST inclusive. ' +
-      "The client sees the GST inside the total.</span></div>" +
-      "</div></div>" +
+function settingsActivity() {
+  var samples = S.cars.some(function (c) { return c.is_sample; });
 
-      '<div class="panel"><header><span class="lbl">Sent messages</span></header>' +
-      (S.log.length ? '<div class="rows">' + S.log.slice(0, 12).map(function (l) {
-        return '<div class="rw" style="cursor:default"><span class="mid">' +
-          '<span class="nm">' + esc(l.recipient) + "</span>" +
-          '<span class="sub">' + esc(l.body) + "</span></span>" +
-          '<span class="chip ' + (l.status === "sent" ? "done" : l.status === "failed" ? "bad" : "warn") + '">' +
-          (l.status === "held" ? "not sent" : esc(l.status)) + "</span></div>";
-      }).join("") + "</div>" : '<div class="empty">Nothing yet.</div>') + "</div>" +
+  return '<p class="sect">The last few messages that went out, and anything left to tidy up.</p>' +
+    '<div class="panel"><header><span class="lbl">Sent messages</span></header>' +
+    (S.log.length ? '<div class="rows">' + S.log.slice(0, 12).map(function (l) {
+      return '<div class="rw" style="cursor:default"><span class="mid">' +
+        '<span class="nm">' + esc(l.recipient) + "</span>" +
+        '<span class="sub">' + esc(l.body) + "</span></span>" +
+        '<span class="chip ' + (l.status === "sent" ? "done" : l.status === "failed" ? "bad" : "warn") + '">' +
+        (l.status === "held" ? "not sent" : esc(l.status)) + "</span></div>";
+    }).join("") + "</div>" : '<div class="empty">Nothing yet.</div>') + "</div>" +
 
-      (S.cars.some(function (c) { return c.is_sample; })
-        ? '<div class="panel"><div class="body row">' +
-          '<span style="flex:1;font-size:13px">This board still has the example cars on it.</span>' +
-          '<button class="btn quiet sm" id="s-clear">Remove them</button></div></div>' : "") +
-    "</div></div>";
+    (samples
+      ? '<div class="panel"><header><span class="lbl">Example cars</span></header>' +
+        '<div class="body row">' +
+        '<span style="flex:1;font-size:13px">This board still has the example cars on it.</span>' +
+        '<button class="btn quiet sm" id="s-clear">Remove them</button></div></div>'
+      : "");
+}
 
+function viewSettings(m, tab) {
+  var known = SETTINGS_TABS.some(function (t) { return t.id === tab; });
+  if (!known) tab = "people";
+
+  var body = tab === "payment" ? settingsPayment()
+    : tab === "messages" ? settingsMessages()
+    : tab === "activity" ? settingsActivity()
+    : settingsPeople();
+
+  m.innerHTML = head("Settings") + settingsTabs(tab) + body;
+
+  m.querySelectorAll("details[data-stage]").forEach(function (d) {
+    d.addEventListener("toggle", function () {
+      openTemplate = d.open ? d.getAttribute("data-stage") : "";
+    });
+  });
   m.querySelectorAll("[data-tog]").forEach(function (cb) {
     cb.addEventListener("change", async function () {
       await api("/api/op/template/toggle", { stage_id: cb.getAttribute("data-tog"), enabled: cb.checked });
@@ -1117,7 +1191,9 @@ function viewSettings(m) {
       toast(r && r.ok ? "Saved" : "Could not save"); load(true);
     });
   });
-  $("s-add").addEventListener("click", async function () {
+  // Only one tab is on the page at a time, so every one of these has to cope
+  // with its own controls being absent.
+  if ($("s-add")) $("s-add").addEventListener("click", async function () {
     $("s-err").textContent = "";
     var r = await api("/api/op/staff/save", {
       name: $("s-name").value,

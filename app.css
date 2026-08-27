@@ -124,6 +124,28 @@ label.field > span{display:block;font-size:10px;font-weight:700;letter-spacing:.
 .panel > header{display:flex;justify-content:space-between;align-items:center;gap:10px;
   padding:10px 14px;border-bottom:1px solid var(--hair);background:var(--surface-2)}
 .panel .body{padding:14px}
+
+/* Settings sub-tabs. Same pill treatment as the client page picker, but
+   anchors rather than buttons, because each one is a real address. */
+.subtabs{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px;scrollbar-width:none}
+.subtabs a{font-size:12.5px;font-weight:600;white-space:nowrap;text-decoration:none;
+  background:var(--surface);color:var(--mute);border:1px solid var(--hair);
+  border-radius:999px;padding:6px 13px}
+.subtabs a:hover{color:var(--ink);border-color:var(--hair-2)}
+.subtabs a.on{background:var(--accent-tint);color:var(--accent);border-color:var(--accent-line)}
+
+/* A panel that opens. Ten message templates expanded at once is a wall;
+   closed, it is a list of ten stages you can actually read. */
+details.panel > summary{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:10px 14px;background:var(--surface-2);cursor:pointer;list-style:none;
+  font-size:13px;font-weight:600;color:var(--ink)}
+details.panel > summary::-webkit-details-marker{display:none}
+details.panel > summary::after{content:"›";transform:rotate(90deg);color:var(--faint);
+  font-size:16px;line-height:1}
+details.panel[open] > summary{border-bottom:1px solid var(--hair)}
+details.panel[open] > summary::after{transform:rotate(-90deg)}
+details.panel > summary:hover{background:var(--hair)}
+.sect{font-size:13px;color:var(--mute);margin:0 0 14px;max-width:60ch;line-height:1.55}
 .stack{display:flex;flex-direction:column;gap:12px}
 .cols2{display:grid;gap:14px;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);align-items:start}
 @media(max-width:1000px){.cols2{grid-template-columns:1fr}}
