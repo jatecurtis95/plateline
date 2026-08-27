@@ -18,7 +18,8 @@
   <form class="box" id="gate-form">
     <svg class="mark" width="38" height="38" viewBox="0 0 48 48" fill="none" aria-hidden="true"><rect x="4.5" y="10.5" width="39" height="27" rx="5.5" stroke="currentColor" stroke-width="3"/><circle cx="11" cy="17" r="1.9" fill="currentColor"/><circle cx="37" cy="17" r="1.9" fill="currentColor"/><circle cx="11" cy="31" r="1.9" fill="currentColor"/><circle cx="37" cy="31" r="1.9" fill="currentColor"/><path d="M12 24h9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M31 24h5" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="26" cy="24" r="4.5" fill="var(--accent)"/></svg>
     <h1>Plateline</h1>
-    <input id="pc" type="password" placeholder="Passcode" autocomplete="current-password" aria-label="Passcode">
+    <input id="un" type="text" placeholder="Username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" aria-label="Username">
+    <input id="pc" type="password" placeholder="Password" autocomplete="current-password" aria-label="Password">
     <button class="btn" type="submit">Sign in</button>
     <p class="err" id="gate-err"></p>
   </form>
@@ -35,6 +36,7 @@
       <a href="#/board" data-nav="board"><span class="ico" aria-hidden="true">🗂️</span>Board</a>
       <a href="#/jobs" data-nav="jobs"><span class="ico" aria-hidden="true">🚗</span>Cars</a>
       <a href="#/clients" data-nav="clients"><span class="ico" aria-hidden="true">👥</span>Clients</a>
+      <a href="#/money" data-nav="money"><span class="ico" aria-hidden="true">💳</span>Money <span class="pip" id="pip-money"></span></a>
       <a href="#/settings" data-nav="settings"><span class="ico" aria-hidden="true">⚙️</span>Settings</a>
     </nav>
     <div class="side-foot">
